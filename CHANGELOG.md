@@ -10,18 +10,18 @@ soon as it has a non-`0.x` release.
 ### Added
 
 - Default `.gitignore` is written into the world save directory on
-  `/gitmc init`. Skips if the user already has one. Covers `session.lock`
+  `/git init`. Skips if the user already has one. Covers `session.lock`
   (held while the world is loaded), `level.dat_old` (regenerated every
   save), `logs/`, and `crash-reports/`. The chat success message reports
   whether the default was written.
-- **`/gitmc status`** — three-section chat output (changes to be committed
+- **`/git status`** — three-section chat output (changes to be committed
   in green, changes not staged in yellow, untracked files in gray). Says
   "Working tree clean." when there's nothing to report.
-- **`/gitmc add <path>`** — stages files matching the given JGit file
+- **`/git add <path>`** — stages files matching the given JGit file
   pattern (e.g. `.`, `*`, `region/`, `region/r.0.0.mca`). Returns the
   number of files staged, or `NothingMatched` if the pattern matched
   nothing.
-- **`/gitmc commit [message]`** — creates a commit from whatever is
+- **`/git commit [message]`** — creates a commit from whatever is
   currently staged. The author and committer are set to the Minecraft
   player who ran the command, with email
   `<name>.<uuid>@gitmc.invalid` (the `.invalid` TLD is non-routable, so
@@ -32,11 +32,18 @@ soon as it has a non-`0.x` release.
   into the launcher's `mods/` directory (default `%APPDATA%\.minecraft\mods`,
   override with `-Pgitmc.mods.dir=…` or `GITMC_MODS_DIR`).
 
+### Changed
+
+- Renamed the in-game root command from `/gitmc` to `/git`. The mod's
+  identifier (`gitmc`), package (`dev.polybit.gitmc`), jar file name,
+  and class names are unchanged. Error messages that referenced
+  `/gitmc init` / `/gitmc add` now point at `/git init` / `/git add`.
+
 ### Planned
 
-- `/gitmc log` with player attribution
-- `/gitmc branch` / `gitmc checkout`
-- `/gitmc revert`
+- `/git log` with player attribution
+- `/git branch` / `/git checkout`
+- `/git revert`
 - Optional Mod Menu integration
 
 ## [0.1.0] — 2026-07-09
@@ -46,7 +53,7 @@ The initial skeleton, end-to-end.
 ### Added
 
 - Fabric `ModInitializer` entry point (`dev.polybit.gitmc.GitMC`).
-- `/gitmc` command tree with a single subcommand, `init`, that bootstraps
+- `/git` command tree with a single subcommand, `init`, that bootstraps
   a JGit repository at the root of the currently loaded world's save
   directory.
 - `GitManager` — a thin wrapper around JGit that returns a sealed

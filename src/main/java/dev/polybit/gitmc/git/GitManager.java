@@ -130,7 +130,7 @@ public final class GitManager {
      */
     public static StatusResult status(File worldDir) {
         if (!isRepo(worldDir)) {
-            return new StatusResult.Failed("Not a git repository. Run /gitmc init first.");
+            return new StatusResult.Failed("Not a git repository. Run /git init first.");
         }
         try (Git git = Git.open(worldDir)) {
             Status status = git.status().call();
@@ -166,7 +166,7 @@ public final class GitManager {
      */
     public static AddResult add(File worldDir, String pattern) {
         if (!isRepo(worldDir)) {
-            return new AddResult.Failed("Not a git repository. Run /gitmc init first.");
+            return new AddResult.Failed("Not a git repository. Run /git init first.");
         }
         if (pattern == null || pattern.isBlank()) {
             return new AddResult.Failed("Path pattern cannot be empty.");
@@ -197,7 +197,7 @@ public final class GitManager {
      */
     public static CommitResult commit(File worldDir, String message, PersonIdent author) {
         if (!isRepo(worldDir)) {
-            return new CommitResult.Failed("Not a git repository. Run /gitmc init first.");
+            return new CommitResult.Failed("Not a git repository. Run /git init first.");
         }
         if (message == null || message.isBlank()) {
             return new CommitResult.Failed("Commit message cannot be empty.");

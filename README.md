@@ -37,21 +37,21 @@ GitMC brings the familiar git workflow to Minecraft. It initializes a real git r
 
 ### Available now
 
-- **`/gitmc init`** — initialize a git repository at the root of the currently
+- **`/git init`** — initialize a git repository at the root of the currently
   loaded world's save directory. The `.git` folder is created alongside
   `level.dat`, so every part of the save (region files, player data,
   datapacks, the lot) becomes committable. A default `.gitignore` is
   written covering `session.lock`, `level.dat_old`, `logs/`, and
   `crash-reports/` (skipped if you already have one).
-- **`/gitmc status`** — three-section chat output: *changes to be committed*
+- **`/git status`** — three-section chat output: *changes to be committed*
   (staged), *changes not staged*, and *untracked files*. Sections that
   don't apply are omitted; if the tree is clean, you just get
   *"Working tree clean."*.
-- **`/gitmc add <path>`** — stage files matching the given JGit pattern.
+- **`/git add <path>`** — stage files matching the given JGit pattern.
   `.` adds everything in the world save (respecting `.gitignore`),
   `*` is top-level only, and you can target specific files or
   directories (e.g. `region/`, `playerdata/yourname.dat`).
-- **`/gitmc commit [message]`** — commit whatever is currently staged.
+- **`/git commit [message]`** — commit whatever is currently staged.
   The author and committer are the Minecraft player who ran the
   command; the message defaults to *"Snapshot by &lt;playername&gt;"*
   if you don't pass one.
@@ -90,19 +90,19 @@ priority is roughly driven by what people actually want.
    (or [build from source](#build-from-source)).
 3. Drop the jar into your `.minecraft/mods/` folder.
 4. Launch Minecraft 26.2.
-5. Load or create a world, then run `/gitmc init` once to bootstrap a repo
+5. Load or create a world, then run `/git init` once to bootstrap a repo
    in that world.
 
 ### Server operators
 
 Identical to the player flow, but the jar goes into the server's `mods/`
-folder. Run `/gitmc init` once as a server operator (or in the server
+folder. Run `/git init` once as a server operator (or in the server
 console) to bootstrap the repo in the world save directory.
 
 ## Usage
 
 ```
-/gitmc
+/git
 ├── init                  Initialize a git repository in the current world's save directory.
 ├── status                Show staged, unstaged, and untracked files.
 ├── add <path>            Stage files matching <path> (`.`, `*`, a directory, or a specific file).
@@ -187,7 +187,7 @@ gitmc/
         ├── java/dev/polybit/gitmc/
         │   ├── GitMC.java                         # Fabric entrypoint
         │   ├── command/
-        │   │   └── GitMCCommands.java             # /gitmc command tree
+        │   │   └── GitMCCommands.java             # /git command tree
         │   └── git/
         │       └── GitManager.java                # JGit wrapper
         └── resources/
@@ -209,12 +209,12 @@ gitmc/
 ## Roadmap
 
 - [x] Project skeleton with `ModInitializer` and Fabric command API
-- [x] `/gitmc init` (real JGit-backed repo in the world save)
+- [x] `/git init` (real JGit-backed repo in the world save)
 - [x] Migration to the non-obfuscated Minecraft 26.x API and Loom plugin
-- [ ] `/gitmc status`, `/gitmc add`, `/gitmc commit`
-- [ ] `/gitmc log` with player attribution
-- [ ] `/gitmc branch` / `gitmc checkout`
-- [ ] `/gitmc revert`
+- [x] `/git status`, `/git add`, `/git commit` with player attribution
+- [ ] `/git log` with player attribution
+- [ ] `/git branch` / `/git checkout`
+- [ ] `/git revert`
 - [ ] Built-in `.gitignore` for noisy save files
 - [ ] Optional Mod Menu integration
 

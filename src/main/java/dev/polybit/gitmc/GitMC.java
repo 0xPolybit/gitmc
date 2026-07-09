@@ -16,7 +16,7 @@ import org.slf4j.LoggerFactory;
  * in-game commands.
  *
  * <p>This class wires up the {@link ModInitializer} hook and registers the
- * {@code /gitmc} command tree. The actual git operations are encapsulated in
+ * {@code /git} command tree. The actual git operations are encapsulated in
  * {@link dev.polybit.gitmc.git.GitManager}.
  */
 public final class GitMC implements ModInitializer {

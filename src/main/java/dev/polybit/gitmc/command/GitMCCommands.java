@@ -28,7 +28,7 @@ import static net.minecraft.commands.Commands.argument;
 import static net.minecraft.commands.Commands.literal;
 
 /**
- * Brigadier command tree for the {@code /gitmc} command.
+ * Brigadier command tree for the {@code /git} command.
  *
  * <p>Registered via Fabric's {@code CommandRegistrationCallback}, which fires
  * on both dedicated and integrated servers.
@@ -55,7 +55,7 @@ public final class GitMCCommands {
         CommandSelection environment
     ) {
         dispatcher.register(
-            literal("gitmc")
+            literal("git")
                 .then(literal("init").executes(GitMCCommands::runInit))
                 .then(literal("status").executes(GitMCCommands::runStatus))
                 .then(literal("add").then(
@@ -162,7 +162,7 @@ public final class GitMCCommands {
             }
             case CommitResult.NothingToCommit() -> {
                 source.sendFailure(
-                    Component.literal("Nothing to commit. Use /gitmc add <path> first."));
+                    Component.literal("Nothing to commit. Use /git add <path> first."));
                 yield 0;
             }
             case CommitResult.Failed(var error) -> {
@@ -217,7 +217,7 @@ public final class GitMCCommands {
     }
 
     /**
-     * Default commit message used when the player runs {@code /gitmc commit}
+     * Default commit message used when the player runs {@code /git commit}
      * without an explicit message.
      */
     private static String defaultCommitMessage(CommandSourceStack source) {

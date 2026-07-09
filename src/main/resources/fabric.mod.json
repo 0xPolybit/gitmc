@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "gitmc",
+  "version": "${version}",
+  "name": "GitMC",
+  "description": "Git version control for Minecraft worlds.",
+  "authors": [
+    "Swastik Biswas"
+  ],
+  "contact": {
+    "homepage": "https://github.com/polybit/gitmc",
+    "sources": "https://github.com/polybit/gitmc"
+  },
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "dev.polybit.gitmc.GitMC"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~26.2",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}

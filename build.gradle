@@ -1,0 +1,110 @@
+plugins {
+    // Non-obfuscated Minecraft (26.x line): use the dedicated plugin id.
+    // The legacy `fabric-loom` id is for 1.21.x and earlier only.
+    id 'net.fabricmc.fabric-loom' version '1.17-SNAPSHOT'
+    id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    // Placeholder for any extra Maven repositories.
+    // Loom already adds Mojang, Fabric, and the Minecraft POM repos.
+}
+
+// Loom's non-obfuscated plugin (Loom 1.14+, plugin id `net.fabricmc.fabric-loom`)
+// downloads the Minecraft jar into a local cache but, on the non-obfuscated
+// path, doesn't automatically attach it to the source-set compile classpaths.
+// We expose that cached jar directly to the main source set so the mod code
+// can reference `net.minecraft.*` packages.
+//
+// (`minecraft "<coords>"` below still registers the version with Loom's
+// internal pipeline so the mod jar assembly, etc. keep working.)
+def minecraftMergedJar = file(
+    "${System.getProperty('user.home')}/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged-deobf/${project.minecraft_version}/minecraft-merged-deobf-${project.minecraft_version}.jar"
+)
+
+dependencies {
+    minecraft "net.minecraft:minecraft-merged-deobf:${project.minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+    // JGit: Java implementation of Git, used for all git features.
+    implementation "org.eclipse.jgit:org.eclipse.jgit:${project.jgit_version}"
+    // `include` bundles JGit into the mod jar so it loads at runtime.
+    include "org.eclipse.jgit:org.eclipse.jgit:${project.jgit_version}"
+}
+
+loom {
+    splitEnvironmentSourceSets()
+
+    mods {
+        "gitmc" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+// Attach the cached Minecraft jar to the main source set's compile/runtime
+// classpath. Doing it via `afterEvaluate` (instead of in the `dependencies`
+// block) sidesteps Loom's "extension property is final" complaint.
+afterEvaluate {
+    def ss = sourceSets.findByName('main')
+    if (ss != null) {
+        ss.compileClasspath += files(minecraftMergedJar)
+        ss.runtimeClasspath += files(minecraftMergedJar)
+    }
+}
+
+// Hoist `project.version` to a local — same trick as the example mod's
+// `processResources` block, since configuration-cache rejects touching the
+// `project` script object inside a Groovy closure at execution time.
+def modVersion = project.version
+
+processResources {
+    def version = project.version
+    inputs.property "version", version
+
+    filesMatching("fabric.mod.json") {
+        expand "version": version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    // Minecraft 26.x requires Java 25+; compile to Java 25 bytecode.
+    it.options.release = 25
+}
+
+java {
+    withSourcesJar()
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+
+def projectName = project.name
+
+jar {
+    inputs.property "projectName", projectName
+
+    from("LICENSE") {
+        rename { "${it}_$projectName" }
+    }
+}
+
+publishing {
+    publications {
+        create("mavenJava", MavenPublication) {
+            artifactId = project.archives_base_name
+            from components.java
+        }
+    }
+
+    repositories {
+        // Add a publish target here if you want to push the jar somewhere.
+    }
+}

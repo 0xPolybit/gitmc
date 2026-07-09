@@ -40,7 +40,21 @@ GitMC brings the familiar git workflow to Minecraft. It initializes a real git r
 - **`/gitmc init`** — initialize a git repository at the root of the currently
   loaded world's save directory. The `.git` folder is created alongside
   `level.dat`, so every part of the save (region files, player data,
-  datapacks, the lot) becomes committable.
+  datapacks, the lot) becomes committable. A default `.gitignore` is
+  written covering `session.lock`, `level.dat_old`, `logs/`, and
+  `crash-reports/` (skipped if you already have one).
+- **`/gitmc status`** — three-section chat output: *changes to be committed*
+  (staged), *changes not staged*, and *untracked files*. Sections that
+  don't apply are omitted; if the tree is clean, you just get
+  *"Working tree clean."*.
+- **`/gitmc add <path>`** — stage files matching the given JGit pattern.
+  `.` adds everything in the world save (respecting `.gitignore`),
+  `*` is top-level only, and you can target specific files or
+  directories (e.g. `region/`, `playerdata/yourname.dat`).
+- **`/gitmc commit [message]`** — commit whatever is currently staged.
+  The author and committer are the Minecraft player who ran the
+  command; the message defaults to *"Snapshot by &lt;playername&gt;"*
+  if you don't pass one.
 
 ### Planned
 
@@ -87,17 +101,20 @@ console) to bootstrap the repo in the world save directory.
 
 ## Usage
 
-The mod exposes a single root command, `/gitmc`:
-
 ```
 /gitmc
-└── init    Initialize a git repository in the current world's save directory.
+├── init                  Initialize a git repository in the current world's save directory.
+├── status                Show staged, unstaged, and untracked files.
+├── add <path>            Stage files matching <path> (`.`, `*`, a directory, or a specific file).
+└── commit [message]      Commit whatever is staged, attributing the author to the running player.
 ```
 
-By default the repo is untracked after `init`. From there, drop into a shell
-and use the regular `git` CLI to commit, branch, and push — or wait for
-`/gitmc commit`, `/gitmc log`, and the rest of the planned commands to land
-in-game.
+By default the repo is untracked after `init`. The typical loop is
+`status` → `add .` → `commit -m "Placed a creeper farm at spawn"`, but you
+can also work in smaller slices (`add region/`, then `commit -m "..."`,
+then `add playerdata/`, then `commit -m "..."`). The author is always
+the Minecraft player who ran the command — run it as someone else and
+the commit is attributed to them.
 
 ## Build from source
 

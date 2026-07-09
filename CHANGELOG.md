@@ -14,10 +14,26 @@ soon as it has a non-`0.x` release.
   (held while the world is loaded), `level.dat_old` (regenerated every
   save), `logs/`, and `crash-reports/`. The chat success message reports
   whether the default was written.
+- **`/gitmc status`** — three-section chat output (changes to be committed
+  in green, changes not staged in yellow, untracked files in gray). Says
+  "Working tree clean." when there's nothing to report.
+- **`/gitmc add <path>`** — stages files matching the given JGit file
+  pattern (e.g. `.`, `*`, `region/`, `region/r.0.0.mca`). Returns the
+  number of files staged, or `NothingMatched` if the pattern matched
+  nothing.
+- **`/gitmc commit [message]`** — creates a commit from whatever is
+  currently staged. The author and committer are set to the Minecraft
+  player who ran the command, with email
+  `<name>.<uuid>@gitmc.invalid` (the `.invalid` TLD is non-routable, so
+  the email is safe to publish). If no message is given, defaults to
+  `"Snapshot by <playername>"`. Console / command-block sources fall
+  back to `Server <server@gitmc.invalid>`.
+- Build workflow: `./gradlew installMod` now builds and copies the jar
+  into the launcher's `mods/` directory (default `%APPDATA%\.minecraft\mods`,
+  override with `-Pgitmc.mods.dir=…` or `GITMC_MODS_DIR`).
 
 ### Planned
 
-- `/gitmc status`, `/gitmc add`, `/gitmc commit`
 - `/gitmc log` with player attribution
 - `/gitmc branch` / `gitmc checkout`
 - `/gitmc revert`

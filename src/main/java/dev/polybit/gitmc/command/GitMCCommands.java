@@ -2,26 +2,36 @@ package dev.polybit.gitmc.command;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import dev.polybit.gitmc.git.GitManager;
+import dev.polybit.gitmc.git.GitManager.AddResult;
+import dev.polybit.gitmc.git.GitManager.CommitResult;
 import dev.polybit.gitmc.git.GitManager.InitResult;
+import dev.polybit.gitmc.git.GitManager.StatusResult;
+import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.Commands.CommandSelection;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.storage.LevelResource;
+import org.eclipse.jgit.lib.PersonIdent;
 
+import java.io.File;
+import java.util.List;
+
+import static net.minecraft.commands.Commands.argument;
 import static net.minecraft.commands.Commands.literal;
 
 /**
  * Brigadier command tree for the {@code /gitmc} command.
  *
- * <p>The root is registered via Fabric's {@code CommandRegistrationCallback},
- * which fires on both dedicated and integrated servers. World-state mutations
- * (commands that would take a snapshot of the save) are deliberately out of
- * scope for the skeleton — this only wires up {@code init}.
+ * <p>Registered via Fabric's {@code CommandRegistrationCallback}, which fires
+ * on both dedicated and integrated servers.
  *
  * <h2>Minecraft 26.2 API mapping</h2>
  * <ul>
@@ -47,8 +57,20 @@ public final class GitMCCommands {
         dispatcher.register(
             literal("gitmc")
                 .then(literal("init").executes(GitMCCommands::runInit))
+                .then(literal("status").executes(GitMCCommands::runStatus))
+                .then(literal("add").then(
+                    argument("path", StringArgumentType.string())
+                        .executes(GitMCCommands::runAdd)))
+                .then(literal("commit")
+                    .executes(GitMCCommands::runCommitDefault)
+                    .then(argument("message", StringArgumentType.string())
+                        .executes(GitMCCommands::runCommit)))
         );
     }
+
+    // ---------------------------------------------------------------------
+    // Command handlers
+    // ---------------------------------------------------------------------
 
     private static int runInit(CommandContext<CommandSourceStack> ctx) {
         CommandSourceStack source = ctx.getSource();
@@ -75,6 +97,161 @@ public final class GitMCCommands {
         };
     }
 
+    private static int runStatus(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        StatusResult result = GitManager.status(worldDir(source.getServer()));
+
+        return switch (result) {
+            case StatusResult.Clean() -> {
+                source.sendSuccess(
+                    () -> Component.literal("Working tree clean."), false);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case StatusResult.Dirty(var staged, var modified, var untracked) -> {
+                source.sendSuccess(() -> formatDirty(staged, modified, untracked), false);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case StatusResult.Failed(var error) -> {
+                source.sendFailure(Component.literal("Failed to read status: " + error));
+                yield 0;
+            }
+        };
+    }
+
+    private static int runAdd(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        String pattern = StringArgumentType.getString(ctx, "path");
+        AddResult result = GitManager.add(worldDir(source.getServer()), pattern);
+
+        return switch (result) {
+            case AddResult.Added(var count) -> {
+                source.sendSuccess(
+                    () -> Component.literal("Staged " + count + " file(s) matching '" + pattern + "'."), true);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case AddResult.NothingMatched(var p) -> {
+                source.sendFailure(
+                    Component.literal("No files matched pattern '" + p + "'."));
+                yield 0;
+            }
+            case AddResult.Failed(var error) -> {
+                source.sendFailure(Component.literal("Failed to add: " + error));
+                yield 0;
+            }
+        };
+    }
+
+    private static int runCommitDefault(CommandContext<CommandSourceStack> ctx) {
+        return doCommit(ctx, defaultCommitMessage(ctx.getSource()));
+    }
+
+    private static int runCommit(CommandContext<CommandSourceStack> ctx) {
+        return doCommit(ctx, StringArgumentType.getString(ctx, "message"));
+    }
+
+    private static int doCommit(CommandContext<CommandSourceStack> ctx, String message) {
+        CommandSourceStack source = ctx.getSource();
+        CommitResult result = GitManager.commit(
+            worldDir(source.getServer()), message, authorFor(source));
+
+        return switch (result) {
+            case CommitResult.Created(var sha, var msg) -> {
+                source.sendSuccess(
+                    () -> Component.literal("Created commit " + sha + ": " + msg), true);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case CommitResult.NothingToCommit() -> {
+                source.sendFailure(
+                    Component.literal("Nothing to commit. Use /gitmc add <path> first."));
+                yield 0;
+            }
+            case CommitResult.Failed(var error) -> {
+                source.sendFailure(Component.literal("Failed to commit: " + error));
+                yield 0;
+            }
+        };
+    }
+
+    // ---------------------------------------------------------------------
+    // Formatting helpers
+    // ---------------------------------------------------------------------
+
+    /**
+     * Renders a {@link StatusResult.Dirty} as a chat-friendly, color-coded
+     * three-section list. Empty sections are omitted.
+     */
+    private static Component formatDirty(List<String> staged, List<String> modified, List<String> untracked) {
+        MutableComponent out = Component.empty();
+        boolean any = false;
+
+        if (!staged.isEmpty()) {
+            any = true;
+            out.append(Component.literal("Changes to be committed:").withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD));
+            out.append(Component.literal("\n"));
+            for (String path : staged) {
+                out.append(Component.literal("  + " + path + "\n").withStyle(ChatFormatting.GREEN));
+            }
+        }
+        if (!modified.isEmpty()) {
+            if (any) {
+                out.append(Component.literal("\n"));
+            }
+            any = true;
+            out.append(Component.literal("Changes not staged for commit:").withStyle(ChatFormatting.YELLOW, ChatFormatting.BOLD));
+            out.append(Component.literal("\n"));
+            for (String path : modified) {
+                out.append(Component.literal("  ~ " + path + "\n").withStyle(ChatFormatting.YELLOW));
+            }
+        }
+        if (!untracked.isEmpty()) {
+            if (any) {
+                out.append(Component.literal("\n"));
+            }
+            out.append(Component.literal("Untracked files:").withStyle(ChatFormatting.GRAY, ChatFormatting.BOLD));
+            out.append(Component.literal("\n"));
+            for (String path : untracked) {
+                out.append(Component.literal("  ? " + path + "\n").withStyle(ChatFormatting.GRAY));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Default commit message used when the player runs {@code /gitmc commit}
+     * without an explicit message.
+     */
+    private static String defaultCommitMessage(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player != null) {
+            return "Snapshot by " + player.getName().getString();
+        }
+        return "Server snapshot";
+    }
+
+    // ---------------------------------------------------------------------
+    // Identity helpers
+    // ---------------------------------------------------------------------
+
+    /**
+     * Build a {@link PersonIdent} for the {@link CommitResult} author/committer
+     * from the executing source.
+     *
+     * <p>For a Minecraft player the identity is
+     * {@code <name>.<uuid>@gitmc.invalid} — the {@code .invalid} TLD is
+     * non-routable (RFC 2606), so it's safe to use a real-looking address
+     * without leaking an actual inbox. For a command-block / console
+     * source we fall back to {@code Server <server@gitmc.invalid>}.
+     */
+    private static PersonIdent authorFor(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player != null) {
+            String name = player.getName().getString();
+            String uuid = player.getUUID().toString();
+            return new PersonIdent(name, name + "." + uuid + "@gitmc.invalid");
+        }
+        return new PersonIdent("Server", "server@gitmc.invalid");
+    }
+
     /**
      * Resolves the world's save root directory.
      *
@@ -84,7 +261,7 @@ public final class GitMCCommands {
      * protected, so {@link MinecraftServer#getWorldPath(LevelResource)} is
      * the only public surface that reaches the storage backend.
      */
-    private static java.io.File worldDir(MinecraftServer server) {
+    private static File worldDir(MinecraftServer server) {
         return server.getWorldPath(LevelResource.LEVEL_DATA_FILE).getParent().toFile();
     }
 }

@@ -7,13 +7,20 @@ soon as it has a non-`0.x` release.
 
 ## [Unreleased]
 
+### Added
+
+- Default `.gitignore` is written into the world save directory on
+  `/gitmc init`. Skips if the user already has one. Covers `session.lock`
+  (held while the world is loaded), `level.dat_old` (regenerated every
+  save), `logs/`, and `crash-reports/`. The chat success message reports
+  whether the default was written.
+
 ### Planned
 
 - `/gitmc status`, `/gitmc add`, `/gitmc commit`
 - `/gitmc log` with player attribution
 - `/gitmc branch` / `gitmc checkout`
 - `/gitmc revert`
-- Built-in `.gitignore` for noisy save files
 - Optional Mod Menu integration
 
 ## [0.1.0] — 2026-07-09

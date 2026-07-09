@@ -55,9 +55,11 @@ public final class GitMCCommands {
         InitResult result = GitManager.init(worldDir(source.getServer()));
 
         return switch (result) {
-            case InitResult.Created(var path) -> {
-                source.sendSuccess(
-                    () -> Component.literal("Initialized git repository in " + path), true);
+            case InitResult.Created(var path, var wroteDefaultGitignore) -> {
+                String message = wroteDefaultGitignore
+                    ? "Initialized git repository in " + path + "; wrote default .gitignore"
+                    : "Initialized git repository in " + path;
+                source.sendSuccess(() -> Component.literal(message), true);
                 yield Command.SINGLE_SUCCESS;
             }
             case InitResult.AlreadyExists(var path) -> {

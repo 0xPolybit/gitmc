@@ -96,6 +96,40 @@ jar {
     }
 }
 
+// Where to drop the built mod jar. Override with `-Pgitmc.mods.dir=/path/to/mods`
+// or the `GITMC_MODS_DIR` environment variable. Default: the vanilla launcher's
+// mods folder (`%APPDATA%\.minecraft\mods` on Windows).
+def modsInstallDir = file(
+    project.findProperty('gitmc.mods.dir') ?:
+    System.getenv('GITMC_MODS_DIR') ?:
+    "${System.getProperty('user.home')}/AppData/Roaming/.minecraft/mods"
+)
+
+// `installMod` builds and copies the produced jar into the mods folder so
+// the next Minecraft launch picks it up. `./gradlew installMod` is the
+// one-liner to use during development.
+tasks.register('installMod') {
+    group = 'gitmc'
+    description = 'Build the mod jar and copy it into the configured mods folder.'
+    dependsOn 'build'
+
+    doLast {
+        if (!modsInstallDir.exists()) {
+            modsInstallDir.mkdirs()
+        }
+        def jarName = "${project.archives_base_name}-${project.version}.jar"
+        def source = file("build/libs/${jarName}")
+        if (!source.exists()) {
+            throw new GradleException("Build artifact missing: ${source}")
+        }
+        copy {
+            from source
+            into modsInstallDir
+        }
+        logger.lifecycle("Installed ${jarName} into ${modsInstallDir}")
+    }
+}
+
 publishing {
     publications {
         create("mavenJava", MavenPublication) {

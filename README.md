@@ -124,6 +124,25 @@ are much faster.
 
 Runs Loom's static checks (access wideners, included jars, mod metadata).
 
+### Installing into your live `mods/` folder
+
+`./gradlew installMod` builds the mod and copies the jar straight into the
+launcher's `mods/` directory so the next Minecraft launch picks it up —
+handy when you're iterating on the mod with the game open on another monitor.
+
+The destination defaults to `%APPDATA%\.minecraft\mods` on Windows. Override
+it per-invocation with a Gradle property or environment variable:
+
+```sh
+# One-off, this terminal only
+./gradlew installMod -Pgitmc.mods.dir=D:/Games/MultiMC/instances/26.2/mods
+
+# Or set once for the shell
+export GITMC_MODS_DIR=/path/to/mods     # macOS / Linux
+setx GITMC_MODS_DIR D:\Games\...\mods   # Windows
+./gradlew installMod
+```
+
 ### Targeting a different Minecraft version
 
 The Minecraft, Yarn (none, since 26.x is non-obfuscated), Fabric API, and

@@ -37,24 +37,18 @@ GitMC brings the familiar git workflow to Minecraft. It initializes a real git r
 
 ### Available now
 
-- **`/git init`** — initialize a git repository at the root of the currently
-  loaded world's save directory. The `.git` folder is created alongside
-  `level.dat`, so every part of the save (region files, player data,
-  datapacks, the lot) becomes committable. A default `.gitignore` is
-  written covering `session.lock`, `level.dat_old`, `logs/`, and
+- **`/git init`** — snapshot every non-air block in the loaded chunks
+  of the current world as the block-level baseline. Saved to
+  `<world>/gitmc/baseline.nbt`. A default `.gitignore` is also written
+  covering `session.lock`, `level.dat_old`, `logs/`, and
   `crash-reports/` (skipped if you already have one).
-- **`/git status`** — three-section chat output: *changes to be committed*
-  (staged), *changes not staged*, and *untracked files*. Sections that
-  don't apply are omitted; if the tree is clean, you just get
-  *"Working tree clean."*.
-- **`/git add <path>`** — stage files matching the given JGit pattern.
-  `.` adds everything in the world save (respecting `.gitignore`),
-  `*` is top-level only, and you can target specific files or
-  directories (e.g. `region/`, `playerdata/yourname.dat`).
-- **`/git commit [message]`** — commit whatever is currently staged.
-  The author and committer are the Minecraft player who ran the
-  command; the message defaults to *"Snapshot by &lt;playername&gt;"*
-  if you don't pass one.
+- **`/git status`** — three-section chat output: *newly placed* (green),
+  *modified* (yellow — block type or any state property changed), and
+  *removed* (red — now air). Sections that don't apply are omitted;
+  if the world is unchanged you just get *"Working tree clean."*.
+  Use `/git status show` for highlights that persist until you hide
+  them; plain `/git status` auto-fades after 30 s; `/git status hide`
+  clears them immediately.
 
 ### Planned
 
@@ -103,18 +97,18 @@ console) to bootstrap the repo in the world save directory.
 
 ```
 /git
-├── init                  Initialize a git repository in the current world's save directory.
-├── status                Show staged, unstaged, and untracked files.
-├── add <path>            Stage files matching <path> (`.`, `*`, a directory, or a specific file).
-└── commit [message]      Commit whatever is staged, attributing the author to the running player.
+├── init                        Capture the block-level baseline for the loaded chunks of the current world.
+├── status [show|hide]          Categorize deltas vs the baseline. With no arg, auto-fades in 30 s.
+│                               `show` keeps them persistent; `hide` clears them.
+└── (more commands planned)
 ```
 
-By default the repo is untracked after `init`. The typical loop is
-`status` → `add .` → `commit -m "Placed a creeper farm at spawn"`, but you
-can also work in smaller slices (`add region/`, then `commit -m "..."`,
-then `add playerdata/`, then `commit -m "..."`). The author is always
-the Minecraft player who ran the command — run it as someone else and
-the commit is attributed to them.
+Run `/git init` once after walking around to load the chunks you care
+about. From then on, `/git status` walks the loaded chunks and reports
+block-level deltas — *newly placed*, *modified* (type or state property
+changed), or *removed* (now air). The translucent in-world overlay
+(arrives in the next iteration) is what makes those changes *visible*;
+the chat summary is just the count.
 
 ## Build from source
 
@@ -186,10 +180,13 @@ gitmc/
     └── main/
         ├── java/dev/polybit/gitmc/
         │   ├── GitMC.java                         # Fabric entrypoint
-        │   ├── command/
-        │   │   └── GitMCCommands.java             # /git command tree
-        │   └── git/
-        │       └── GitManager.java                # JGit wrapper
+        │   ├── block/
+        │   │   ├── BlockSnapshot.java             # one (pos, stateId) tuple
+        │   │   ├── BlockDelta.java                # sealed: Untracked / Modified / Removed
+        │   │   ├── BlockChangeTracker.java        # per-world baseline + delta computation
+        │   │   └── BlockChangeTrackerManager.java # per-server tracker registry + lifecycle
+        │   └── command/
+        │       └── GitMCCommands.java             # /git command tree
         └── resources/
             └── fabric.mod.json                   # Mod metadata
 ```

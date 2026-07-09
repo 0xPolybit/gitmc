@@ -33,11 +33,6 @@ dependencies {
     minecraft "net.minecraft:minecraft-merged-deobf:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
-
-    // JGit: Java implementation of Git, used for all git features.
-    implementation "org.eclipse.jgit:org.eclipse.jgit:${project.jgit_version}"
-    // `include` bundles JGit into the mod jar so it loads at runtime.
-    include "org.eclipse.jgit:org.eclipse.jgit:${project.jgit_version}"
 }
 
 loom {
@@ -46,6 +41,7 @@ loom {
     mods {
         "gitmc" {
             sourceSet sourceSets.main
+            sourceSet sourceSets.client
         }
     }
 }

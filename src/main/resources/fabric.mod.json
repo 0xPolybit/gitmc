@@ -16,6 +16,9 @@
   "entrypoints": {
     "main": [
       "dev.polybit.gitmc.GitMC"
+    ],
+    "client": [
+      "dev.polybit.gitmc.client.GitMCClient"
     ]
   },
   "depends": {

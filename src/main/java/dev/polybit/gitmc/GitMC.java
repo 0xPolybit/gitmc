@@ -1,44 +1,36 @@
 package dev.polybit.gitmc;
 
-import dev.polybit.gitmc.command.GitMCCommands;
+import dev.polybit.gitmc.block.BlockChangeTrackerManager;
 import net.fabricmc.api.ModInitializer;
-import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Fabric entry point for GitMC.
  *
- * <p>GitMC brings git-style version control to Minecraft worlds: a player can
- * initialize a git repository inside the currently loaded world's save
- * directory and snapshot progress with commits, branch off experiments, merge
- * changes back together, and revert when a build goes sideways — all from
- * in-game commands.
+ * <p>GitMC provides block-level version control for Minecraft worlds: a
+ * player can snapshot the state of their world's loaded chunks with
+ * {@code /git init}, see what's changed since via {@code /git status
+ * [show|hide]}, and reset with a future {@code /git reset} command.
  *
- * <p>This class wires up the {@link ModInitializer} hook and registers the
- * {@code /git} command tree. The actual git operations are encapsulated in
- * {@link dev.polybit.gitmc.git.GitManager}.
+ * <p>The tracker is per-world, persisted to {@code <world>/gitmc/baseline.nbt}
+ * on init, and rehydrated when the world loads.
  */
 public final class GitMC implements ModInitializer {
 
-    /** Mod id; also the logger name and the root command name. */
+    /** Mod id; also the logger name and the (former) root command name. */
     public static final String MOD_ID = "gitmc";
 
     /**
-     * Human-readable version string.
-     *
-     * <p>Mirrored from {@code gradle.properties}. The {@code fabric.mod.json}
-     * baked into the jar is the authoritative source of truth — this constant
-     * exists for log messages and for callers that want to display the
-     * running version. Bump both together.
+     * Mirrors {@code gradle.properties}. The {@code fabric.mod.json} baked
+     * into the jar is the authoritative source of truth; this constant
+     * exists for log messages.
      */
     public static final String VERSION = "0.1.0";
 
-    public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+    public static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(MOD_ID);
 
     @Override
     public void onInitialize() {
         LOGGER.info("Initializing {} v{}", MOD_ID, VERSION);
-        CommandRegistrationCallback.EVENT.register(GitMCCommands::register);
+        BlockChangeTrackerManager.register();
     }
 }

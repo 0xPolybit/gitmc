@@ -9,6 +9,41 @@ soon as it has a non-`0.x` release.
 
 ### Added
 
+- **`/git branch`** / **`/git branch <name>`** — list local branches
+  (current one marked green), or create a new branch at the current
+  commit without switching to it.
+- **`/git checkout <branch>`** / **`/git checkout <branch> confirm`** —
+  switch branches, creating `<branch>` first if it doesn't exist (like
+  `git checkout -b`). Split into a no-op preview and an explicit confirm
+  step because checkout is meaningfully more dangerous here than in a
+  normal repo: a running Minecraft world keeps chunks and other state in
+  memory, and periodically autosaves it back to disk — swapping files
+  out from under a *running* world risks that stale in-memory state
+  autosaving right back over whatever checkout just wrote, silently
+  undoing it.
+  - `GitManager.planCheckout(File, String)` computes, without mutating
+    anything: whether the branch exists yet, whether the working tree
+    has uncommitted changes (blocks checkout outright if so), and —
+    via comparing `repo.resolve("HEAD^{tree}")` against
+    `repo.resolve("refs/heads/<branch>^{tree}")` — whether the checkout
+    would actually change any file content. A brand-new branch is
+    always tree-identical to HEAD, so creating one and switching to it
+    never trips this.
+  - `GitManager.checkout(File, String)` re-runs the identical
+    preflight check before performing the switch (`CheckoutPreflight`,
+    shared by both methods), so preview and execution can never
+    disagree, and there's no cached state between the two calls that
+    could go stale.
+  - `GitMCCommands` forces `MinecraftServer.saveEverything(...)` before
+    both the preview and the confirm, so the dirty-check and the
+    tree-comparison reflect true on-disk state rather than whatever was
+    last autosaved. If the confirmed checkout changed file content, it
+    calls `MinecraftServer.halt(false)` afterward — `false` because
+    `halt(true)` blocks until shutdown completes, which would deadlock
+    if called from the server's own thread (as a command handler is).
+  - Scoped to singleplayer/LAN, same as the block-change overlay:
+    halting a dedicated server to protect one player's checkout would
+    disconnect everyone else too.
 - **`/git log [count]`** — the `count` most recent commits (default 10,
   max 50), newest first: short hash (gold), message (white), and
   `(author, relative time)` (gray) — e.g. `a1b2c3d Placed a creeper

@@ -8,7 +8,11 @@ import com.mojang.brigadier.context.CommandContext;
 import dev.polybit.gitmc.block.BlockChangeTracker;
 import dev.polybit.gitmc.git.GitManager;
 import dev.polybit.gitmc.git.GitManager.AddResult;
+import dev.polybit.gitmc.git.GitManager.BranchListResult;
+import dev.polybit.gitmc.git.GitManager.CheckoutPlan;
+import dev.polybit.gitmc.git.GitManager.CheckoutResult;
 import dev.polybit.gitmc.git.GitManager.CommitResult;
+import dev.polybit.gitmc.git.GitManager.CreateBranchResult;
 import dev.polybit.gitmc.git.GitManager.InitResult;
 import dev.polybit.gitmc.git.GitManager.LogEntry;
 import dev.polybit.gitmc.git.GitManager.LogResult;
@@ -79,6 +83,24 @@ import static net.minecraft.commands.Commands.literal;
  *       previously persistent or mid-countdown.</li>
  * </ul>
  * See {@link BlockChangeTracker} for what is and isn't tracked.
+ *
+ * <h2>{@code /git branch} and {@code /git checkout}</h2>
+ * {@code /git branch} lists local branches (current one marked), or with a
+ * name, creates a new branch at the current commit without switching to it.
+ * {@code /git checkout <branch>} switches branches — creating {@code branch}
+ * first if it doesn't exist, like {@code git checkout -b}. Because swapping
+ * files under a <em>running</em> Minecraft world risks the server's
+ * in-memory state autosaving right back over whatever was just checked out
+ * (see {@link GitManager} class docs), checkout is two-step:
+ * <ul>
+ *   <li>{@code /git checkout <branch>} — a dry-run preview: what would
+ *       happen, and whether it would require closing the world.</li>
+ *   <li>{@code /git checkout <branch> confirm} — actually performs it. Forces
+ *       a full save first (so the dirty-check and preview reflect real
+ *       on-disk state), refuses if there are uncommitted changes, and — only
+ *       if the checkout actually changes file content — halts the server
+ *       afterward so the world must be reopened to see the change safely.</li>
+ * </ul>
  */
 public final class GitMCCommands {
 
@@ -119,6 +141,14 @@ public final class GitMCCommands {
                     .executes(GitMCCommands::runLogDefault)
                     .then(argument("count", IntegerArgumentType.integer(1, MAX_LOG_COUNT))
                         .executes(GitMCCommands::runLog)))
+                .then(literal("branch")
+                    .executes(GitMCCommands::runBranchList)
+                    .then(argument("name", StringArgumentType.word())
+                        .executes(GitMCCommands::runBranchCreate)))
+                .then(literal("checkout")
+                    .then(argument("branch", StringArgumentType.word())
+                        .executes(GitMCCommands::runCheckoutPreview)
+                        .then(literal("confirm").executes(GitMCCommands::runCheckoutConfirm))))
         );
     }
 
@@ -365,6 +395,146 @@ public final class GitMCCommands {
 
     private static String plural(long count, String unit) {
         return count + " " + unit + (count == 1 ? "" : "s") + " ago";
+    }
+
+    /** {@code /git branch} (no argument): lists local branches, current one marked and green. */
+    private static int runBranchList(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        BranchListResult result = GitManager.listBranches(worldDir(source.getServer()));
+
+        return switch (result) {
+            case BranchListResult.Listed(var names, var current) -> {
+                source.sendSuccess(() -> formatBranchList(names, current), false);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case BranchListResult.Failed(var error) -> {
+                source.sendFailure(Component.literal("Failed to list branches: " + error));
+                yield 0;
+            }
+        };
+    }
+
+    /** {@code /git branch <name>}: creates a branch at the current commit without switching to it. */
+    private static int runBranchCreate(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        String name = StringArgumentType.getString(ctx, "name");
+        CreateBranchResult result = GitManager.createBranch(worldDir(source.getServer()), name);
+
+        return switch (result) {
+            case CreateBranchResult.Created(var branchName) -> {
+                source.sendSuccess(
+                    () -> Component.literal("Created branch '" + branchName + "' at the current commit."), true);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case CreateBranchResult.AlreadyExists(var branchName) -> {
+                source.sendFailure(Component.literal("Branch '" + branchName + "' already exists."));
+                yield 0;
+            }
+            case CreateBranchResult.Failed(var error) -> {
+                source.sendFailure(Component.literal("Failed to create branch: " + error));
+                yield 0;
+            }
+        };
+    }
+
+    private static Component formatBranchList(List<String> names, String current) {
+        MutableComponent out = Component.empty();
+        for (int i = 0; i < names.size(); i++) {
+            if (i > 0) {
+                out.append(Component.literal("\n"));
+            }
+            String name = names.get(i);
+            boolean isCurrent = name.equals(current);
+            String marker = isCurrent ? "* " : "  ";
+            out.append(Component.literal(marker + name)
+                .withStyle(isCurrent ? ChatFormatting.GREEN : ChatFormatting.GRAY));
+        }
+        return out;
+    }
+
+    /**
+     * {@code /git checkout <branch>} (no {@code confirm}): a dry-run preview.
+     * Forces a save first so the preview reflects true on-disk state — see
+     * {@link GitManager} class docs for why that matters.
+     */
+    private static int runCheckoutPreview(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        MinecraftServer server = source.getServer();
+        server.saveEverything(false, true, true);
+
+        String branch = StringArgumentType.getString(ctx, "branch");
+        CheckoutPlan plan = GitManager.planCheckout(worldDir(server), branch);
+
+        return switch (plan) {
+            case CheckoutPlan.Ready(var willCreate, var requiresRestart) -> {
+                String action = willCreate
+                    ? "Create branch '" + branch + "' at your current commit and switch to it."
+                    : "Switch to branch '" + branch + "'.";
+                String restartNote = requiresRestart
+                    ? " This changes world files, so the world will close afterward — reopen it to see the change."
+                    : " This won't change any world files, so you can keep playing right after.";
+                source.sendSuccess(() -> Component.literal(
+                    action + restartNote + " Run '/git checkout " + branch + " confirm' to proceed."), false);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case CheckoutPlan.AlreadyOnBranch(var b) -> {
+                source.sendFailure(Component.literal("Already on branch '" + b + "'."));
+                yield 0;
+            }
+            case CheckoutPlan.DirtyWorkingTree(var count) -> {
+                source.sendFailure(Component.literal(
+                    "You have " + count + " uncommitted change(s) that would block checkout. "
+                        + "Use /git status, /git add, and /git commit first."));
+                yield 0;
+            }
+            case CheckoutPlan.Failed(var error) -> {
+                source.sendFailure(Component.literal("Failed to check branch: " + error));
+                yield 0;
+            }
+        };
+    }
+
+    /**
+     * {@code /git checkout <branch> confirm}: actually performs the switch.
+     * Re-validates everything fresh (no state is carried over from the
+     * preview call), so there's no way for a stale preview to authorize an
+     * unsafe checkout.
+     */
+    private static int runCheckoutConfirm(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        MinecraftServer server = source.getServer();
+        server.saveEverything(false, true, true);
+
+        String branch = StringArgumentType.getString(ctx, "branch");
+        CheckoutResult result = GitManager.checkout(worldDir(server), branch);
+
+        return switch (result) {
+            case CheckoutResult.Switched(var branchName, var requiresRestart) -> {
+                if (requiresRestart) {
+                    source.sendSuccess(() -> Component.literal(
+                        "Switched to '" + branchName + "'. Closing the world now so the change "
+                            + "takes effect safely — reopen it to continue."), true);
+                    server.halt(false);
+                } else {
+                    source.sendSuccess(() -> Component.literal(
+                        "Switched to '" + branchName + "'. No file changes, so you can keep playing."), true);
+                }
+                yield Command.SINGLE_SUCCESS;
+            }
+            case CheckoutResult.AlreadyOnBranch(var b) -> {
+                source.sendFailure(Component.literal("Already on branch '" + b + "'."));
+                yield 0;
+            }
+            case CheckoutResult.DirtyWorkingTree(var count) -> {
+                source.sendFailure(Component.literal(
+                    "You have " + count + " uncommitted change(s). Commit them with /git add and /git commit first."));
+                yield 0;
+            }
+            case CheckoutResult.Failed(var error) -> {
+                source.sendFailure(Component.literal("Failed to checkout: " + error));
+                yield 0;
+            }
+        };
     }
 
     // ---------------------------------------------------------------------

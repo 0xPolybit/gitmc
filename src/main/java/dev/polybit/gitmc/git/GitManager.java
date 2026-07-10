@@ -5,7 +5,11 @@ import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.NoHeadException;
+import org.eclipse.jgit.api.errors.RefAlreadyExistsException;
+import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
+import org.eclipse.jgit.lib.Ref;
+import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +30,20 @@ import java.util.Set;
  * <p>Each method returns a typed sealed-interface result rather than throwing,
  * so command handlers can map outcomes to chat messages without pulling JGit
  * exception types into the command layer.
+ *
+ * <h2>Why {@code checkout} is more dangerous here than in a normal repo</h2>
+ * A plain git checkout just rewrites files that nothing else has open. A
+ * running Minecraft world isn't like that: the server keeps loaded chunks,
+ * player data, and other state in memory, and periodically autosaves that
+ * in-memory state back to disk. If a checkout swaps the on-disk files out
+ * from under a still-running world, the server's stale in-memory state can
+ * autosave right back over whatever was just checked out — silently undoing
+ * it. This class stays Minecraft-agnostic (it only knows about files and
+ * JGit), so the caller (see {@code GitMCCommands}) is responsible for
+ * forcing a full save before checkout and, when the checkout actually
+ * changes file content ({@link CheckoutPlan.Ready#requiresWorldRestart()}
+ * / {@link CheckoutResult.Switched#worldRestartRequired()}), stopping the
+ * server afterward so stale state can never be written back.
  */
 public final class GitManager {
 
@@ -92,6 +110,47 @@ public final class GitManager {
 
     /** One commit's summary, as shown by {@code /git log}. */
     public record LogEntry(String shortSha, String message, String authorName, Instant timestamp) {}
+
+    /** Outcome of {@link #listBranches(File)}. */
+    public sealed interface BranchListResult {
+        record Listed(List<String> names, String current) implements BranchListResult {}
+        record Failed(String error) implements BranchListResult {}
+    }
+
+    /** Outcome of {@link #createBranch(File, String)}. */
+    public sealed interface CreateBranchResult {
+        record Created(String name) implements CreateBranchResult {}
+        record AlreadyExists(String name) implements CreateBranchResult {}
+        record Failed(String error) implements CreateBranchResult {}
+    }
+
+    /**
+     * Outcome of {@link #planCheckout(File, String)} — computed without
+     * mutating anything, so a caller can preview what a checkout would do
+     * (and require explicit confirmation) before actually performing one.
+     * Shares its cases with {@link CheckoutResult} by design: both are
+     * answers to "what would/did checking out to this branch do".
+     */
+    public sealed interface CheckoutPlan {
+        /**
+         * @param branchExists         false means checkout will create {@code branch} at the current commit
+         * @param requiresWorldRestart true if the target's file content differs from what's
+         *                             on disk right now — see the class-level docs for why
+         *                             that matters for a running Minecraft world
+         */
+        record Ready(boolean branchExists, boolean requiresWorldRestart) implements CheckoutPlan {}
+        record AlreadyOnBranch(String branch) implements CheckoutPlan {}
+        record DirtyWorkingTree(int changedFileCount) implements CheckoutPlan {}
+        record Failed(String error) implements CheckoutPlan {}
+    }
+
+    /** Outcome of {@link #checkout(File, String)}. */
+    public sealed interface CheckoutResult {
+        record Switched(String branch, boolean worldRestartRequired) implements CheckoutResult {}
+        record AlreadyOnBranch(String branch) implements CheckoutResult {}
+        record DirtyWorkingTree(int changedFileCount) implements CheckoutResult {}
+        record Failed(String error) implements CheckoutResult {}
+    }
 
     // ---------------------------------------------------------------------
     // Operations
@@ -255,9 +314,150 @@ public final class GitManager {
         }
     }
 
+    /** Lists all local branches, alphabetically, along with which one is current. */
+    public static BranchListResult listBranches(File worldDir) {
+        if (!isRepo(worldDir)) {
+            return new BranchListResult.Failed("Not a git repository. Run /git init first.");
+        }
+        try (Git git = Git.open(worldDir)) {
+            String current = git.getRepository().getBranch();
+            List<String> names = git.branchList().call().stream()
+                .map(ref -> shortBranchName(ref.getName()))
+                .sorted()
+                .toList();
+            return new BranchListResult.Listed(names, current);
+        } catch (IOException | GitAPIException | RuntimeException e) {
+            String failure = describe(e);
+            LOGGER.warn("git branch (list) failed in {}: {}", worldDir, failure, e);
+            return new BranchListResult.Failed(failure);
+        }
+    }
+
+    /** Creates a new branch at the current commit, without switching to it. */
+    public static CreateBranchResult createBranch(File worldDir, String name) {
+        if (!isRepo(worldDir)) {
+            return new CreateBranchResult.Failed("Not a git repository. Run /git init first.");
+        }
+        if (name == null || name.isBlank()) {
+            return new CreateBranchResult.Failed("Branch name cannot be empty.");
+        }
+        try (Git git = Git.open(worldDir)) {
+            git.branchCreate().setName(name).call();
+            return new CreateBranchResult.Created(name);
+        } catch (RefAlreadyExistsException e) {
+            return new CreateBranchResult.AlreadyExists(name);
+        } catch (IOException | GitAPIException | RuntimeException e) {
+            String failure = describe(e);
+            LOGGER.warn("git branch (create={}) failed in {}: {}", name, worldDir, failure, e);
+            return new CreateBranchResult.Failed(failure);
+        }
+    }
+
+    /**
+     * Computes what checking out to {@code branchName} would do, without
+     * changing anything. See {@link CheckoutPlan} for the possible outcomes.
+     */
+    public static CheckoutPlan planCheckout(File worldDir, String branchName) {
+        if (!isRepo(worldDir)) {
+            return new CheckoutPlan.Failed("Not a git repository. Run /git init first.");
+        }
+        if (branchName == null || branchName.isBlank()) {
+            return new CheckoutPlan.Failed("Branch name cannot be empty.");
+        }
+        try (Git git = Git.open(worldDir)) {
+            CheckoutPreflight preflight = computePreflight(git, branchName);
+            if (preflight.currentBranch().equals(branchName)) {
+                return new CheckoutPlan.AlreadyOnBranch(branchName);
+            }
+            if (preflight.dirty()) {
+                return new CheckoutPlan.DirtyWorkingTree(preflight.changedFileCount());
+            }
+            return new CheckoutPlan.Ready(preflight.branchExists(), !preflight.sameTree());
+        } catch (IOException | GitAPIException | RuntimeException e) {
+            String failure = describe(e);
+            LOGGER.warn("git checkout (plan, branch={}) failed in {}: {}", branchName, worldDir, failure, e);
+            return new CheckoutPlan.Failed(failure);
+        }
+    }
+
+    /**
+     * Switches to {@code branchName}, creating it at the current commit
+     * first if it doesn't already exist (like {@code git checkout -b}).
+     * Refuses if the working tree has any uncommitted changes — see the
+     * class-level docs for why a partial "would this conflict" check isn't
+     * good enough here.
+     */
+    public static CheckoutResult checkout(File worldDir, String branchName) {
+        if (!isRepo(worldDir)) {
+            return new CheckoutResult.Failed("Not a git repository. Run /git init first.");
+        }
+        if (branchName == null || branchName.isBlank()) {
+            return new CheckoutResult.Failed("Branch name cannot be empty.");
+        }
+        try (Git git = Git.open(worldDir)) {
+            CheckoutPreflight preflight = computePreflight(git, branchName);
+            if (preflight.currentBranch().equals(branchName)) {
+                return new CheckoutResult.AlreadyOnBranch(branchName);
+            }
+            if (preflight.dirty()) {
+                return new CheckoutResult.DirtyWorkingTree(preflight.changedFileCount());
+            }
+            boolean requiresRestart = !preflight.sameTree();
+            git.checkout()
+                .setName(branchName)
+                .setCreateBranch(!preflight.branchExists())
+                .call();
+            return new CheckoutResult.Switched(branchName, requiresRestart);
+        } catch (IOException | GitAPIException | RuntimeException e) {
+            String failure = describe(e);
+            LOGGER.warn("git checkout (branch={}) failed in {}: {}", branchName, worldDir, failure, e);
+            return new CheckoutResult.Failed(failure);
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------
+
+    /**
+     * Shared groundwork for {@link #planCheckout(File, String)} and
+     * {@link #checkout(File, String)}, so preview and execution can never
+     * disagree about whether the tree is dirty or whether content would
+     * actually change.
+     */
+    private record CheckoutPreflight(
+        boolean dirty, int changedFileCount, boolean branchExists, boolean sameTree, String currentBranch
+    ) {}
+
+    private static CheckoutPreflight computePreflight(Git git, String branchName) throws IOException, GitAPIException {
+        Repository repo = git.getRepository();
+        String currentBranch = repo.getBranch();
+
+        Status status = git.status().call();
+        boolean dirty = !status.isClean();
+        int changedFileCount = status.getAdded().size() + status.getChanged().size() + status.getRemoved().size()
+            + status.getModified().size() + status.getMissing().size() + status.getUntracked().size();
+
+        Ref targetRef = repo.findRef("refs/heads/" + branchName);
+        boolean branchExists = targetRef != null;
+
+        boolean sameTree;
+        if (branchExists) {
+            ObjectId currentTree = repo.resolve("HEAD^{tree}");
+            ObjectId targetTree = repo.resolve("refs/heads/" + branchName + "^{tree}");
+            sameTree = currentTree != null && currentTree.equals(targetTree);
+        } else {
+            // A brand-new branch is created at HEAD, so it's always tree-identical to HEAD.
+            sameTree = true;
+        }
+
+        return new CheckoutPreflight(dirty, changedFileCount, branchExists, sameTree, currentBranch);
+    }
+
+    private static String shortBranchName(String fullRefName) {
+        String prefix = "refs/heads/";
+        return fullRefName.startsWith(prefix) ? fullRefName.substring(prefix.length()) : fullRefName;
+    }
 
     private static boolean isRepo(File worldDir) {
         return worldDir != null && worldDir.isDirectory()

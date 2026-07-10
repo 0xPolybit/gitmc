@@ -25,6 +25,7 @@ GitMC brings the familiar git workflow to Minecraft. It initializes a real git r
 - [Features](#features)
 - [Block-change overlay](#block-change-overlay)
 - [Coordinate-based staging](#coordinate-based-staging)
+- [Branching and checkout](#branching-and-checkout)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -79,11 +80,19 @@ GitMC brings the familiar git workflow to Minecraft. It initializes a real git r
   author, and a humanized relative time (*"3 minutes ago"*, *"2 days
   ago"*, …). Says *"No commits yet."* if you haven't committed
   anything.
+- **`/git branch`** — list local branches, current one marked. **`/git
+  branch <name>`** — create a new branch at your current commit
+  without switching to it.
+- **`/git checkout <branch>`** — switch branches, creating `<branch>`
+  first if it doesn't exist (like `git checkout -b`). Two-step for
+  safety: the bare command previews what would happen (and whether it
+  requires closing the world) without changing anything; **`/git
+  checkout <branch> confirm`** actually performs it. See
+  [Branching and checkout](#branching-and-checkout) below for why this
+  needs more care in a live Minecraft world than in a normal repo.
 
 ### Planned
 
-- `/git branch [name]` / `/git checkout <branch>` — branch to try risky
-  changes, then come back.
 - `/git revert <commit>` — roll a world back to an earlier snapshot.
 - A chat-based diff viewer.
 - Dedicated-server networking so the `/git status` overlay is visible to
@@ -159,6 +168,44 @@ takes it for a familiar `/fill`-shaped command even though it isn't load-bearing
 command (the same way `/fill` and `/setblock` do) — running it while
 standing in the Nether stages Nether region files, not Overworld ones.
 
+## Branching and checkout
+
+A plain `git checkout` just rewrites files nothing else has open. A
+running Minecraft world isn't like that — the server keeps chunks,
+player data, and other state in memory and periodically autosaves it
+back to disk. If a checkout swapped world files out from under a still
+*running* world, the server's stale in-memory state could autosave right
+back over whatever was just checked out, silently undoing it. GitMC's
+checkout is built around that risk:
+
+- **`/git checkout <branch>`** (no `confirm`) never touches anything. It
+  previews what would happen: whether `<branch>` will be created,
+  and — critically — whether the checkout would actually change any
+  file content. Switching to a brand-new branch never does (it starts
+  identical to where you are); switching to a branch that's diverged
+  usually does.
+- **`/git checkout <branch> confirm`** forces a full save first (so the
+  check above reflects real on-disk state, not stale in-memory data),
+  refuses outright if you have uncommitted changes, and — only if the
+  checkout actually changes file content — closes the world afterward
+  so the stale in-memory state can never overwrite the fresh checkout.
+  Just reopen the world to continue on the new branch.
+- The common "branch to try something risky" flow (`/git checkout
+  new-branch-name confirm`, right after creating it) does **not** close
+  the world, since nothing has diverged yet — you keep playing
+  immediately. It's switching *back* to a branch with different history
+  that triggers the safe-close.
+- Preview and confirm each independently recompute everything from
+  scratch — there's no cached state between the two calls that could go
+  stale or be tricked into skipping a check.
+
+This is currently a singleplayer/LAN feature for the same reason as the
+`/git status` overlay: on a dedicated server, closing the world means
+stopping the server for every connected player, which isn't something
+GitMC does automatically without everyone's awareness. Multiplayer-aware
+checkout (e.g. requiring all players to be out of the world first) is a
+possible future improvement.
+
 ## Requirements
 
 | | Minimum | Notes |
@@ -198,7 +245,11 @@ console) to bootstrap the repo in the world save directory.
 ├── add <pos>             Stage the region file(s) covering a single block position.
 ├── add <from> <to>       Stage the region file(s) covering a coordinate range.
 ├── commit [message]      Commit whatever is staged, attributing the author to the running player.
-└── log [count]           Show the most recent commits (default 10, max 50).
+├── log [count]           Show the most recent commits (default 10, max 50).
+├── branch                List local branches, current one marked.
+├── branch <name>         Create a branch at the current commit without switching to it.
+├── checkout <branch>     Preview switching to <branch> (creating it first if new). Doesn't change anything.
+└── checkout <branch> confirm   Actually switch, saving first and closing the world if content changed.
 ```
 
 By default the repo is untracked after `init`. The typical loop is
@@ -320,8 +371,9 @@ gitmc/
 - [x] `/git status show|hide` — in-world block-change overlay (singleplayer/LAN)
 - [x] Coordinate-based `/git add` (single position or range → region files)
 - [x] `/git log` with player attribution and relative timestamps
+- [x] `/git branch` / `/git checkout` (preview + confirm, safe around a running world)
 - [ ] Dedicated-server networking for the block-change overlay
-- [ ] `/git branch` / `/git checkout`
+- [ ] Multiplayer-aware checkout (currently singleplayer/LAN only)
 - [ ] `/git revert`
 - [ ] Optional Mod Menu integration
 

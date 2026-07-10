@@ -17,10 +17,16 @@ import net.minecraft.world.phys.Vec3;
 import java.util.Map;
 
 /**
- * Client entrypoint for GitMC. Renders the {@code /git status show|hide}
- * overlay: a translucent colored box over every block position tracked by
+ * Client entrypoint for GitMC. Renders the {@code /git status} overlay: a
+ * translucent colored box over every block position tracked by
  * {@link BlockChangeTracker} since the last commit — green for newly placed
  * blocks, yellow for replaced blocks, red for removed blocks.
+ *
+ * <p>Opacity is read fresh from {@link BlockChangeTracker#currentOpacity()}
+ * every frame and multiplied into each box's alpha, so the
+ * {@code /git status} (timed, auto-fades) vs {@code /git status show}
+ * (persistent) distinction is handled entirely by the tracker — this class
+ * doesn't need to know which mode is active, only "how visible right now".
  */
 public final class GitMCClient implements ClientModInitializer {
 
@@ -38,7 +44,8 @@ public final class GitMCClient implements ClientModInitializer {
 
     private static void renderTrackedChanges(LevelRenderContext context) {
         BlockChangeTracker tracker = BlockChangeTracker.getInstance();
-        if (!tracker.isOverlayVisible()) {
+        float opacity = tracker.currentOpacity();
+        if (opacity <= 0f) {
             return;
         }
 
@@ -59,6 +66,7 @@ public final class GitMCClient implements ClientModInitializer {
         for (Map.Entry<BlockPos, BlockDelta> entry : deltas.entrySet()) {
             BlockPos pos = entry.getKey();
             float[] color = colorFor(entry.getValue().kind());
+            float alpha = color[3] * opacity;
 
             poseStack.pushPose();
             poseStack.translate(
@@ -67,19 +75,15 @@ public final class GitMCClient implements ClientModInitializer {
                 pos.getZ() - cameraPos.z
             );
             collector.submitCustomGeometry(poseStack, RenderTypes.debugFilledBox(),
-                (pose, vertexConsumer) -> emitBox(pose, vertexConsumer, color));
+                (pose, vertexConsumer) -> emitBox(pose, vertexConsumer, color[0], color[1], color[2], alpha));
             poseStack.popPose();
         }
     }
 
     /** Emits a unit cube (6 quads, 24 vertices) in the pose's local space, slightly inflated by {@link #INSET}. */
-    private static void emitBox(PoseStack.Pose pose, VertexConsumer vc, float[] color) {
+    private static void emitBox(PoseStack.Pose pose, VertexConsumer vc, float r, float g, float b, float a) {
         float lo = -INSET;
         float hi = 1f + INSET;
-        float r = color[0];
-        float g = color[1];
-        float b = color[2];
-        float a = color[3];
 
         // RenderTypes.debugFilledBox() disables backface culling, so winding order doesn't matter here.
         quad(pose, vc, r, g, b, a, lo, lo, lo, hi, lo, lo, hi, lo, hi, lo, lo, hi); // -Y

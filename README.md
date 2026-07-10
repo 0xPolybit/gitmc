@@ -44,12 +44,17 @@ GitMC brings the familiar git workflow to Minecraft. It initializes a real git r
   datapacks, the lot) becomes committable. A default `.gitignore` is
   written covering `session.lock`, `level.dat_old`, `logs/`, and
   `crash-reports/` (skipped if you already have one).
-- **`/git status [show|hide]`** — toggles an in-world overlay highlighting
-  every block a player has placed, replaced, or broken since the last
-  commit: **translucent green** for a new block, **translucent yellow**
-  for a replaced block, **translucent red** for a removed block (a
-  ghost outline at the now-empty position). `/git status` alone and
-  `/git status show` both turn it on; `/git status hide` turns it off.
+- **`/git status`** — shows an in-world overlay highlighting every block a
+  player has placed, replaced, or broken since the last commit:
+  **translucent green** for a new block, **translucent yellow** for a
+  replaced block, **translucent red** for a removed block (a ghost
+  outline at the now-empty position). Three ways to control it:
+  - `/git status` (no argument) — shown for 30 seconds, then fades out
+    on its own over ~3 seconds.
+  - `/git status show` — shown until you explicitly hide it.
+  - `/git status hide` — hides immediately, whether it was showing
+    persistently or mid-countdown.
+
   See [Block-change overlay](#block-change-overlay) below for exactly
   what counts as a tracked change and its current limitations.
 - **`/git add <path>`** — stage files matching the given JGit pattern.
@@ -95,10 +100,18 @@ Every later change to the same position only updates the tracked
 to its original state (placed, then broken back to what was there),
 tracking for it is dropped entirely: no net change, nothing to show.
 
-**Lifetime:** tracking is in-memory only. A server/game restart clears it
-(as if everything since the last commit had already been committed) — it
-does not persist to disk. This only affects what the overlay highlights;
-the actual blocks in the world are never touched by any of this.
+**Lifetime of the tracked data:** in-memory only. A server/game restart
+clears it (as if everything since the last commit had already been
+committed) — it does not persist to disk. This only affects what the
+overlay highlights; the actual blocks in the world are never touched by
+any of this.
+
+**Lifetime of the overlay's visibility** (separate from the tracked
+data above) is one of three modes, controlled by which `/git status`
+variant you last ran — see [Features](#features) above. The 30-second
+countdown and fade are computed from wall-clock time each frame, so
+running the bare `/git status` command again always restarts the
+30-second window from full opacity.
 
 **Current scope:** singleplayer and LAN. The overlay reads tracked changes
 directly from the same JVM the integrated server runs in, so there is no
@@ -138,7 +151,9 @@ console) to bootstrap the repo in the world save directory.
 ```
 /git
 ├── init                  Initialize a git repository in the current world's save directory.
-├── status [show|hide]    Toggle the block-change overlay (default: show).
+├── status                Show the block-change overlay for 30s, then auto-fade.
+├── status show           Show the block-change overlay until explicitly hidden.
+├── status hide           Hide the overlay immediately.
 ├── add <path>            Stage files matching <path> (`.`, `*`, a directory, or a specific file).
 └── commit [message]      Commit whatever is staged, attributing the author to the running player.
 ```

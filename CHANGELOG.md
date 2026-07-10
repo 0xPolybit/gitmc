@@ -26,13 +26,21 @@ soon as it has a non-`0.x` release.
   `"Snapshot by <playername>"`. Console / command-block sources fall
   back to `Server <server@gitmc.invalid>`. A successful commit also
   clears the `/git status` block-change overlay.
-- **`/git status [show|hide]`** — in-world overlay highlighting blocks a
-  player has placed (translucent green), replaced (translucent yellow),
-  or broken (translucent red, as a ghost outline) since the last commit.
-  `/git status` and `/git status show` turn it on; `/git status hide`
-  turns it off. This replaces the earlier file-based
-  staged/unstaged/untracked text output — see the `block` package below
-  for the tracking design.
+- **`/git status`** — in-world overlay highlighting blocks a player has
+  placed (translucent green), replaced (translucent yellow), or broken
+  (translucent red, as a ghost outline) since the last commit. This
+  replaces the earlier file-based staged/unstaged/untracked text output
+  — see the `block` package below for the tracking design. Three modes:
+  - `/git status` (no argument) — full opacity for 30 seconds
+    (`BlockChangeTracker.TIMED_VISIBLE_MILLIS`), then fades out over
+    3 seconds (`TIMED_FADE_MILLIS`). Re-running it restarts the window.
+  - `/git status show` — full opacity until explicitly hidden.
+  - `/git status hide` — hidden immediately, canceling any active timer
+    or persistent state.
+
+  The countdown and fade are a pure function of wall-clock time
+  (`BlockChangeTracker.currentOpacity()`), recomputed every render
+  frame — no ticking task or scheduled callback drives it.
   - `BlockChangeTracker` (new `dev.polybit.gitmc.block` package) records
     only direct player actions: placing (via `BlockItemMixin`, since
     Fabric API has no bundled block-place event) or breaking

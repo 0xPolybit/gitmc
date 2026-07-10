@@ -42,10 +42,18 @@ import static net.minecraft.commands.Commands.literal;
  *
  * <h2>{@code /git status}</h2>
  * Unlike the other subcommands, {@code status} does not report git's own
- * staged/unstaged/untracked file state. It toggles the in-world block-change
- * overlay tracked by {@link BlockChangeTracker}: {@code /git status} and
- * {@code /git status show} turn the overlay on, {@code /git status hide}
- * turns it off. See {@link BlockChangeTracker} for what is and isn't tracked.
+ * staged/unstaged/untracked file state. It controls the in-world
+ * block-change overlay tracked by {@link BlockChangeTracker}, with three
+ * distinct behaviors:
+ * <ul>
+ *   <li>{@code /git status show} — shown until explicitly hidden.</li>
+ *   <li>{@code /git status} (no argument) — shown at full opacity for
+ *       {@link BlockChangeTracker#TIMED_VISIBLE_MILLIS}, then fades out
+ *       over {@link BlockChangeTracker#TIMED_FADE_MILLIS}.</li>
+ *   <li>{@code /git status hide} — hidden immediately, whether it was
+ *       previously persistent or mid-countdown.</li>
+ * </ul>
+ * See {@link BlockChangeTracker} for what is and isn't tracked.
  */
 public final class GitMCCommands {
 
@@ -61,9 +69,9 @@ public final class GitMCCommands {
             literal("git")
                 .then(literal("init").executes(GitMCCommands::runInit))
                 .then(literal("status")
-                    .executes(ctx -> runStatus(ctx, true))
-                    .then(literal("show").executes(ctx -> runStatus(ctx, true)))
-                    .then(literal("hide").executes(ctx -> runStatus(ctx, false))))
+                    .executes(GitMCCommands::runStatusTimed)
+                    .then(literal("show").executes(GitMCCommands::runStatusShow))
+                    .then(literal("hide").executes(GitMCCommands::runStatusHide)))
                 .then(literal("add").then(
                     argument("path", StringArgumentType.string())
                         .executes(GitMCCommands::runAdd)))
@@ -103,27 +111,36 @@ public final class GitMCCommands {
         };
     }
 
-    /**
-     * Toggles the block-change overlay. {@code show} (also the no-argument
-     * default) makes it visible; {@code hide} turns it off. Does not touch
-     * the underlying tracked-change data — only visibility.
-     */
-    private static int runStatus(CommandContext<CommandSourceStack> ctx, boolean show) {
-        CommandSourceStack source = ctx.getSource();
+    /** {@code /git status} (no argument): shown for a fixed window, then auto-fades. */
+    private static int runStatusTimed(CommandContext<CommandSourceStack> ctx) {
         BlockChangeTracker tracker = BlockChangeTracker.getInstance();
-        tracker.setOverlayVisible(show);
-
-        String message;
-        if (show) {
-            int count = tracker.totalCount();
-            message = count == 0
-                ? "Overlay shown. No tracked block changes since the last commit."
-                : "Overlay shown. Highlighting " + count + " tracked block change(s).";
-        } else {
-            message = "Overlay hidden.";
-        }
-        source.sendSuccess(() -> Component.literal(message), false);
+        tracker.showTimed();
+        long seconds = BlockChangeTracker.TIMED_VISIBLE_MILLIS / 1000L;
+        reportOverlayShown(ctx.getSource(), tracker, "Overlay shown for " + seconds + " seconds.");
         return Command.SINGLE_SUCCESS;
+    }
+
+    /** {@code /git status show}: stays visible until {@code /git status hide}. */
+    private static int runStatusShow(CommandContext<CommandSourceStack> ctx) {
+        BlockChangeTracker tracker = BlockChangeTracker.getInstance();
+        tracker.showPersistent();
+        reportOverlayShown(ctx.getSource(), tracker, "Overlay shown.");
+        return Command.SINGLE_SUCCESS;
+    }
+
+    /** {@code /git status hide}: hides immediately, canceling any active timer. */
+    private static int runStatusHide(CommandContext<CommandSourceStack> ctx) {
+        BlockChangeTracker.getInstance().hide();
+        ctx.getSource().sendSuccess(() -> Component.literal("Overlay hidden."), false);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static void reportOverlayShown(CommandSourceStack source, BlockChangeTracker tracker, String prefix) {
+        int count = tracker.totalCount();
+        String message = count == 0
+            ? prefix + " No tracked block changes since the last commit."
+            : prefix + " Highlighting " + count + " tracked block change(s).";
+        source.sendSuccess(() -> Component.literal(message), false);
     }
 
     private static int runAdd(CommandContext<CommandSourceStack> ctx) {

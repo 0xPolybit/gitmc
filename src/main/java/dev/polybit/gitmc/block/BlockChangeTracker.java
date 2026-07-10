@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Tracks block placements and removals caused directly by players since the
- * last {@code /git commit}, for the {@code /git status show|hide} overlay.
+ * last {@code /git commit}, for the {@code /git status} overlay.
  *
  * <h2>Scope</h2>
  * Only direct player actions are recorded: placing a block (see the
@@ -26,20 +26,50 @@ import java.util.concurrent.ConcurrentHashMap;
  * {@code /git commit} clears it, since everything up to that point is now
  * part of the repository's history.
  *
+ * <h2>Overlay visibility</h2>
+ * Independent of the tracked data, the overlay has three visibility modes
+ * (see {@link OverlayMode}): hidden, shown until explicitly hidden
+ * ({@code /git status show}), or shown for a fixed window that then fades
+ * out on its own ({@code /git status} with no argument). {@link #currentOpacity()}
+ * is the single source of truth the renderer reads each frame; it also
+ * governs the "N seconds until it disappears" timed behavior without any
+ * background thread — it's a pure function of wall-clock time.
+ *
  * <h2>Singleplayer/LAN scope</h2>
  * This class is a single instance shared by the client and the integrated
- * server in the same JVM, which is how the {@code /git status show|hide}
- * toggle (executed on the logical server, via a command) reaches the
- * renderer (running on the client) without a network channel. On a real
- * dedicated server with remote clients, this does not yet propagate —
- * see the project roadmap.
+ * server in the same JVM, which is how the {@code /git status} command
+ * (executed on the logical server) reaches the renderer (running on the
+ * client) without a network channel. On a real dedicated server with remote
+ * clients, this does not yet propagate — see the project roadmap.
  */
 public final class BlockChangeTracker {
+
+    /** How the overlay is currently being shown. */
+    public enum OverlayMode {
+        /** Not rendered. */
+        HIDDEN,
+        /** Rendered at full opacity until {@code /git status hide}. */
+        PERSISTENT,
+        /**
+         * Rendered at full opacity for {@link #TIMED_VISIBLE_MILLIS}, then
+         * fades out over {@link #TIMED_FADE_MILLIS}, then behaves as hidden —
+         * all without changing mode, since {@link #currentOpacity()} derives
+         * this purely from elapsed time.
+         */
+        TIMED
+    }
+
+    /** How long the {@code /git status} (no-argument) overlay stays at full opacity. */
+    public static final long TIMED_VISIBLE_MILLIS = 30_000L;
+
+    /** How long the fade-out takes once {@link #TIMED_VISIBLE_MILLIS} elapses. */
+    public static final long TIMED_FADE_MILLIS = 3_000L;
 
     private static final BlockChangeTracker INSTANCE = new BlockChangeTracker();
 
     private final Map<ResourceKey<Level>, Map<BlockPos, BlockDelta>> byDimension = new ConcurrentHashMap<>();
-    private volatile boolean overlayVisible = true;
+    private volatile OverlayMode overlayMode = OverlayMode.HIDDEN;
+    private volatile long overlayShownAtMillis;
 
     private BlockChangeTracker() {
     }
@@ -89,11 +119,54 @@ public final class BlockChangeTracker {
         byDimension.clear();
     }
 
-    public boolean isOverlayVisible() {
-        return overlayVisible;
+    /** {@code /git status show}: overlay stays fully visible until {@link #hide()}. */
+    public void showPersistent() {
+        overlayMode = OverlayMode.PERSISTENT;
     }
 
-    public void setOverlayVisible(boolean visible) {
-        overlayVisible = visible;
+    /**
+     * {@code /git status} (no argument): overlay is fully visible for
+     * {@link #TIMED_VISIBLE_MILLIS}, then fades out over
+     * {@link #TIMED_FADE_MILLIS}. Calling this again (e.g. re-running the
+     * bare command) restarts the window from full opacity.
+     */
+    public void showTimed() {
+        overlayMode = OverlayMode.TIMED;
+        overlayShownAtMillis = System.currentTimeMillis();
+    }
+
+    /** {@code /git status hide}: overlay stops rendering immediately, canceling any timer. */
+    public void hide() {
+        overlayMode = OverlayMode.HIDDEN;
+    }
+
+    /**
+     * The alpha multiplier (0.0–1.0) the overlay should currently be
+     * rendered at. Pure function of wall-clock time and the current mode —
+     * no ticking or scheduled task drives the {@link OverlayMode#TIMED}
+     * countdown or fade; each frame just asks "what should opacity be right
+     * now", which naturally reaches 0 once the window elapses.
+     */
+    public float currentOpacity() {
+        return switch (overlayMode) {
+            case HIDDEN -> 0f;
+            case PERSISTENT -> 1f;
+            case TIMED -> {
+                long elapsed = System.currentTimeMillis() - overlayShownAtMillis;
+                if (elapsed < TIMED_VISIBLE_MILLIS) {
+                    yield 1f;
+                }
+                long fadeElapsed = elapsed - TIMED_VISIBLE_MILLIS;
+                if (fadeElapsed >= TIMED_FADE_MILLIS) {
+                    yield 0f;
+                }
+                yield 1f - ((float) fadeElapsed / TIMED_FADE_MILLIS);
+            }
+        };
+    }
+
+    /** Convenience for callers that only need a yes/no, e.g. an early-return before rendering. */
+    public boolean isOverlayVisible() {
+        return currentOpacity() > 0f;
     }
 }

@@ -23,6 +23,7 @@ GitMC brings the familiar git workflow to Minecraft. It initializes a real git r
 ## Table of contents
 
 - [Features](#features)
+- [Block-change overlay](#block-change-overlay)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -37,34 +38,73 @@ GitMC brings the familiar git workflow to Minecraft. It initializes a real git r
 
 ### Available now
 
-- **`/git init`** — snapshot every non-air block in the loaded chunks
-  of the current world as the block-level baseline. Saved to
-  `<world>/gitmc/baseline.nbt`. A default `.gitignore` is also written
-  covering `session.lock`, `level.dat_old`, `logs/`, and
+- **`/git init`** — initialize a git repository at the root of the currently
+  loaded world's save directory. The `.git` folder is created alongside
+  `level.dat`, so every part of the save (region files, player data,
+  datapacks, the lot) becomes committable. A default `.gitignore` is
+  written covering `session.lock`, `level.dat_old`, `logs/`, and
   `crash-reports/` (skipped if you already have one).
-- **`/git status`** — three-section chat output: *newly placed* (green),
-  *modified* (yellow — block type or any state property changed), and
-  *removed* (red — now air). Sections that don't apply are omitted;
-  if the world is unchanged you just get *"Working tree clean."*.
-  Use `/git status show` for highlights that persist until you hide
-  them; plain `/git status` auto-fades after 30 s; `/git status hide`
-  clears them immediately.
+- **`/git status [show|hide]`** — toggles an in-world overlay highlighting
+  every block a player has placed, replaced, or broken since the last
+  commit: **translucent green** for a new block, **translucent yellow**
+  for a replaced block, **translucent red** for a removed block (a
+  ghost outline at the now-empty position). `/git status` alone and
+  `/git status show` both turn it on; `/git status hide` turns it off.
+  See [Block-change overlay](#block-change-overlay) below for exactly
+  what counts as a tracked change and its current limitations.
+- **`/git add <path>`** — stage files matching the given JGit pattern.
+  `.` adds everything in the world save (respecting `.gitignore`),
+  `*` is top-level only, and you can target specific files or
+  directories (e.g. `region/`, `playerdata/yourname.dat`).
+- **`/git commit [message]`** — commit whatever is currently staged.
+  The author and committer are the Minecraft player who ran the
+  command; the message defaults to *"Snapshot by &lt;playername&gt;"*
+  if you don't pass one. Successfully committing also clears the
+  `/git status` overlay, since everything up to that point is now
+  part of the repository's history.
 
 ### Planned
 
-- `gitmc status` — show modified and untracked files inside the world.
-- `gitmc add <path>` / `gitmc add .` — stage changes.
-- `gitmc commit [-m <msg>]` — snapshot the world state with a message.
-- `gitmc log` — list recent commits with player attribution and timestamps.
-- `gitmc branch [name]` / `gitmc checkout <branch>` — branch to try risky
+- `/git log` — list recent commits with player attribution and timestamps.
+- `/git branch [name]` / `/git checkout <branch>` — branch to try risky
   changes, then come back.
-- `gitmc revert <commit>` — roll a world back to an earlier snapshot.
-- A sensible built-in `.gitignore` for volatile files (e.g. `session.lock`,
-  hot-loaded chunk regions).
+- `/git revert <commit>` — roll a world back to an earlier snapshot.
 - A chat-based diff viewer.
+- Dedicated-server networking so the `/git status` overlay is visible to
+  remote clients, not just in singleplayer/LAN.
 
 If any of those are particularly useful to you, please open an issue —
 priority is roughly driven by what people actually want.
+
+## Block-change overlay
+
+`/git status`'s overlay is a live "diff since last commit" view of the
+world, not a file-level diff — it answers "what did players actually
+build or destroy", not "what changed in the underlying region files".
+
+**What's tracked:** only direct player actions — placing a block
+(right-click) or breaking one (left-click break). Physics-driven changes
+(pistons, water/lava flow, crop growth, leaf decay, redstone contraptions,
+explosions, falling blocks) are **not** tracked, on purpose — including
+them would flood the overlay with changes nobody directly caused.
+
+**How positions are classified:** the first time a position changes since
+the last commit, its state at that moment becomes the tracked "original".
+Every later change to the same position only updates the tracked
+"current" state — the original stays put. If a position is changed back
+to its original state (placed, then broken back to what was there),
+tracking for it is dropped entirely: no net change, nothing to show.
+
+**Lifetime:** tracking is in-memory only. A server/game restart clears it
+(as if everything since the last commit had already been committed) — it
+does not persist to disk. This only affects what the overlay highlights;
+the actual blocks in the world are never touched by any of this.
+
+**Current scope:** singleplayer and LAN. The overlay reads tracked changes
+directly from the same JVM the integrated server runs in, so there is no
+networking involved yet. On a real dedicated server, `/git status`
+still runs and reports a change count, but remote clients won't see the
+colored overlay until a networking layer is added (see Roadmap).
 
 ## Requirements
 
@@ -97,18 +137,19 @@ console) to bootstrap the repo in the world save directory.
 
 ```
 /git
-├── init                        Capture the block-level baseline for the loaded chunks of the current world.
-├── status [show|hide]          Categorize deltas vs the baseline. With no arg, auto-fades in 30 s.
-│                               `show` keeps them persistent; `hide` clears them.
-└── (more commands planned)
+├── init                  Initialize a git repository in the current world's save directory.
+├── status [show|hide]    Toggle the block-change overlay (default: show).
+├── add <path>            Stage files matching <path> (`.`, `*`, a directory, or a specific file).
+└── commit [message]      Commit whatever is staged, attributing the author to the running player.
 ```
 
-Run `/git init` once after walking around to load the chunks you care
-about. From then on, `/git status` walks the loaded chunks and reports
-block-level deltas — *newly placed*, *modified* (type or state property
-changed), or *removed* (now air). The translucent in-world overlay
-(arrives in the next iteration) is what makes those changes *visible*;
-the chat summary is just the count.
+By default the repo is untracked after `init`. The typical loop is
+`status` (to see what you've built or destroyed) → `add .` →
+`commit -m "Placed a creeper farm at spawn"`, but you can also work in
+smaller slices (`add region/`, then `commit -m "..."`, then
+`add playerdata/`, then `commit -m "..."`). The author is always the
+Minecraft player who ran the command — run it as someone else and the
+commit is attributed to them.
 
 ## Build from source
 
@@ -176,19 +217,26 @@ gitmc/
 ├── CHANGELOG.md
 ├── LICENSE
 ├── README.md                 # You are here
-└── src/
-    └── main/
-        ├── java/dev/polybit/gitmc/
-        │   ├── GitMC.java                         # Fabric entrypoint
-        │   ├── block/
-        │   │   ├── BlockSnapshot.java             # one (pos, stateId) tuple
-        │   │   ├── BlockDelta.java                # sealed: Untracked / Modified / Removed
-        │   │   ├── BlockChangeTracker.java        # per-world baseline + delta computation
-        │   │   └── BlockChangeTrackerManager.java # per-server tracker registry + lifecycle
-        │   └── command/
-        │       └── GitMCCommands.java             # /git command tree
-        └── resources/
-            └── fabric.mod.json                   # Mod metadata
+├── src/
+│   ├── main/
+│   │   ├── java/dev/polybit/gitmc/
+│   │   │   ├── GitMC.java                        # Fabric entrypoint (common)
+│   │   │   ├── block/
+│   │   │   │   ├── BlockChangeTracker.java       # Player-action block-change tracker
+│   │   │   │   └── BlockDelta.java               # A tracked position's before/after state
+│   │   │   ├── command/
+│   │   │   │   └── GitMCCommands.java            # /git command tree
+│   │   │   ├── git/
+│   │   │   │   └── GitManager.java               # JGit wrapper
+│   │   │   └── mixin/
+│   │   │       └── BlockItemMixin.java           # Detects successful player block placement
+│   │   └── resources/
+│   │       ├── fabric.mod.json                   # Mod metadata
+│   │       └── gitmc.mixins.json                 # Mixin config
+│   └── client/
+│       └── java/dev/polybit/gitmc/client/
+│           └── GitMCClient.java                  # Renders the /git status overlay
+└── (build files, see above)
 ```
 
 ## Tech stack
@@ -206,13 +254,14 @@ gitmc/
 ## Roadmap
 
 - [x] Project skeleton with `ModInitializer` and Fabric command API
-- [x] `/git init` (real JGit-backed repo in the world save)
+- [x] `/git init` (real JGit-backed repo in the world save) with a default `.gitignore`
 - [x] Migration to the non-obfuscated Minecraft 26.x API and Loom plugin
-- [x] `/git status`, `/git add`, `/git commit` with player attribution
+- [x] `/git add`, `/git commit` with player attribution
+- [x] `/git status show|hide` — in-world block-change overlay (singleplayer/LAN)
+- [ ] Dedicated-server networking for the block-change overlay
 - [ ] `/git log` with player attribution
 - [ ] `/git branch` / `/git checkout`
 - [ ] `/git revert`
-- [ ] Built-in `.gitignore` for noisy save files
 - [ ] Optional Mod Menu integration
 
 ## Contributing

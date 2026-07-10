@@ -33,6 +33,11 @@ dependencies {
     minecraft "net.minecraft:minecraft-merged-deobf:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+    // JGit: Java implementation of Git, used for all git features.
+    implementation "org.eclipse.jgit:org.eclipse.jgit:${project.jgit_version}"
+    // `include` bundles JGit into the mod jar so it loads at runtime.
+    include "org.eclipse.jgit:org.eclipse.jgit:${project.jgit_version}"
 }
 
 loom {
@@ -46,14 +51,19 @@ loom {
     }
 }
 
-// Attach the cached Minecraft jar to the main source set's compile/runtime
-// classpath. Doing it via `afterEvaluate` (instead of in the `dependencies`
-// block) sidesteps Loom's "extension property is final" complaint.
+// Attach the cached Minecraft jar to both source sets' compile/runtime
+// classpaths. Doing it via `afterEvaluate` (instead of in the `dependencies`
+// block) sidesteps Loom's "extension property is final" complaint. Patching
+// both `main` and `client` explicitly (rather than relying on `client`
+// inheriting `main`'s classpath) keeps this independent of exactly how
+// `splitEnvironmentSourceSets()` wires source set inheritance.
 afterEvaluate {
-    def ss = sourceSets.findByName('main')
-    if (ss != null) {
-        ss.compileClasspath += files(minecraftMergedJar)
-        ss.runtimeClasspath += files(minecraftMergedJar)
+    ['main', 'client'].each { name ->
+        def ss = sourceSets.findByName(name)
+        if (ss != null) {
+            ss.compileClasspath += files(minecraftMergedJar)
+            ss.runtimeClasspath += files(minecraftMergedJar)
+        }
     }
 }
 

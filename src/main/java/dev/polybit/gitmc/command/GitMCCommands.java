@@ -2,20 +2,25 @@ package dev.polybit.gitmc.command;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import dev.polybit.gitmc.block.BlockChangeTracker;
-import dev.polybit.gitmc.block.BlockChangeTrackerManager;
-import dev.polybit.gitmc.block.BlockDelta;
-import net.minecraft.ChatFormatting;
+import dev.polybit.gitmc.git.GitManager;
+import dev.polybit.gitmc.git.GitManager.AddResult;
+import dev.polybit.gitmc.git.GitManager.CommitResult;
+import dev.polybit.gitmc.git.GitManager.InitResult;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands.CommandSelection;
 import net.minecraft.network.chat.Component;
-import net.minecraft.network.chat.MutableComponent;
-import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.storage.LevelResource;
+import org.eclipse.jgit.lib.PersonIdent;
 
-import java.util.List;
+import java.io.File;
 
+import static net.minecraft.commands.Commands.argument;
 import static net.minecraft.commands.Commands.literal;
 
 /**
@@ -24,19 +29,23 @@ import static net.minecraft.commands.Commands.literal;
  * <p>Registered via Fabric's {@code CommandRegistrationCallback}, which fires
  * on both dedicated and integrated servers.
  *
- * <h2>Block-level design</h2>
- * <p>GitMC does not use JGit. The {@code /git} command family operates on
- * an in-memory + on-disk {@link BlockChangeTracker} per world:
- *
+ * <h2>Minecraft 26.2 API mapping</h2>
  * <ul>
- *   <li>{@code /git init} — capture every currently-loaded block as the
- *       baseline (overwrites any prior baseline).</li>
- *   <li>{@code /git status} — show deltas vs baseline, auto-fading after
- *       30 seconds.</li>
- *   <li>{@code /git status show} — same as {@code status}, but persistent
- *       until {@code /git status hide} is run.</li>
- *   <li>{@code /git status hide} — clear highlights for the executor.</li>
+ *   <li>{@code net.minecraft.command.*} → {@code net.minecraft.commands.*} (package renamed)</li>
+ *   <li>{@code ServerCommandSource} → {@code CommandSourceStack}</li>
+ *   <li>{@code CommandRegistryAccess} → {@code CommandBuildContext}</li>
+ *   <li>{@code ServerCommandSource.Environment} → {@code Commands.CommandSelection}</li>
+ *   <li>{@code Text.literal(...)} → {@code Component.literal(...)}</li>
+ *   <li>{@code MinecraftServer.getSavePath(WorldSavePath.ROOT)} →
+ *       {@code MinecraftServer.getWorldPath(LevelResource.LEVEL_DATA_FILE).getParent()}</li>
  * </ul>
+ *
+ * <h2>{@code /git status}</h2>
+ * Unlike the other subcommands, {@code status} does not report git's own
+ * staged/unstaged/untracked file state. It toggles the in-world block-change
+ * overlay tracked by {@link BlockChangeTracker}: {@code /git status} and
+ * {@code /git status show} turn the overlay on, {@code /git status hide}
+ * turns it off. See {@link BlockChangeTracker} for what is and isn't tracked.
  */
 public final class GitMCCommands {
 
@@ -52,104 +61,174 @@ public final class GitMCCommands {
             literal("git")
                 .then(literal("init").executes(GitMCCommands::runInit))
                 .then(literal("status")
-                    .executes(GitMCCommands::runStatus)
-                    .then(literal("show").executes(GitMCCommands::runStatusShow))
-                    .then(literal("hide").executes(GitMCCommands::runStatusHide)))
+                    .executes(ctx -> runStatus(ctx, true))
+                    .then(literal("show").executes(ctx -> runStatus(ctx, true)))
+                    .then(literal("hide").executes(ctx -> runStatus(ctx, false))))
+                .then(literal("add").then(
+                    argument("path", StringArgumentType.string())
+                        .executes(GitMCCommands::runAdd)))
+                .then(literal("commit")
+                    .executes(GitMCCommands::runCommitDefault)
+                    .then(argument("message", StringArgumentType.string())
+                        .executes(GitMCCommands::runCommit)))
         );
     }
 
     // ---------------------------------------------------------------------
-    // Handlers
+    // Command handlers
     // ---------------------------------------------------------------------
 
     private static int runInit(CommandContext<CommandSourceStack> ctx) {
         CommandSourceStack source = ctx.getSource();
-        ServerLevel level = source.getLevel();
-        BlockChangeTracker tracker = BlockChangeTrackerManager.initialize(level);
-        source.sendSuccess(() -> Component.literal(
-            "Captured baseline of " + tracker.baselineSize() + " block(s). Use /git status to see changes."
-        ), true);
-        return Command.SINGLE_SUCCESS;
-    }
+        InitResult result = GitManager.init(worldDir(source.getServer()));
 
-    private static int runStatus(CommandContext<CommandSourceStack> ctx) {
-        return doStatus(ctx, /*persistent*/ false);
-    }
-
-    private static int runStatusShow(CommandContext<CommandSourceStack> ctx) {
-        return doStatus(ctx, /*persistent*/ true);
-    }
-
-    private static int runStatusHide(CommandContext<CommandSourceStack> ctx) {
-        // Phase B (client rendering) will hide the visual highlights here.
-        // For now we just acknowledge the command.
-        ctx.getSource().sendSuccess(() -> Component.literal(
-            "Highlights cleared. (Visual fade-in comes in Phase B.)"
-        ), false);
-        return Command.SINGLE_SUCCESS;
-    }
-
-    private static int doStatus(CommandContext<CommandSourceStack> ctx, boolean persistent) {
-        CommandSourceStack source = ctx.getSource();
-        BlockChangeTracker tracker = BlockChangeTrackerManager.get(source.getLevel());
-
-        if (tracker == null) {
-            source.sendFailure(Component.literal(
-                "No baseline yet. Run /git init first."
-            ));
-            return 0;
-        }
-
-        List<BlockDelta> deltas = tracker.computeDeltas();
-        if (deltas.isEmpty()) {
-            source.sendSuccess(
-                () -> Component.literal("Working tree clean (no block deltas)."), false);
-            return Command.SINGLE_SUCCESS;
-        }
-
-        // Count each category; we use an effectively-final-friendly accumulator
-        // (arrays) so the captured values can be used inside the lambda.
-        int[] counts = new int[3]; // [untracked, modified, removed]
-        for (BlockDelta d : deltas) {
-            switch (d) {
-                case BlockDelta.Untracked ignored -> counts[0]++;
-                case BlockDelta.Modified ignored -> counts[1]++;
-                case BlockDelta.Removed ignored -> counts[2]++;
+        return switch (result) {
+            case InitResult.Created(var path, var wroteDefaultGitignore) -> {
+                String message = wroteDefaultGitignore
+                    ? "Initialized git repository in " + path + "; wrote default .gitignore"
+                    : "Initialized git repository in " + path;
+                source.sendSuccess(() -> Component.literal(message), true);
+                yield Command.SINGLE_SUCCESS;
             }
+            case InitResult.AlreadyExists(var path) -> {
+                source.sendSuccess(
+                    () -> Component.literal("Already a git repository: " + path), true);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case InitResult.Failed(var error) -> {
+                source.sendFailure(
+                    Component.literal("Failed to initialize git repository: " + error));
+                yield 0;
+            }
+        };
+    }
+
+    /**
+     * Toggles the block-change overlay. {@code show} (also the no-argument
+     * default) makes it visible; {@code hide} turns it off. Does not touch
+     * the underlying tracked-change data — only visibility.
+     */
+    private static int runStatus(CommandContext<CommandSourceStack> ctx, boolean show) {
+        CommandSourceStack source = ctx.getSource();
+        BlockChangeTracker tracker = BlockChangeTracker.getInstance();
+        tracker.setOverlayVisible(show);
+
+        String message;
+        if (show) {
+            int count = tracker.totalCount();
+            message = count == 0
+                ? "Overlay shown. No tracked block changes since the last commit."
+                : "Overlay shown. Highlighting " + count + " tracked block change(s).";
+        } else {
+            message = "Overlay hidden.";
         }
-
-        int untracked = counts[0];
-        int modified = counts[1];
-        int removed = counts[2];
-        int total = deltas.size();
-
-        source.sendSuccess(
-            () -> Component.literal(
-                persistent
-                    ? "Highlighting " + total + " change(s) (persistent): "
-                    : "Highlighting " + total + " change(s) (auto-fades in 30s): "
-            )
-            .append(summarize(untracked, modified, removed))
-            .append(Component.literal(
-                " (In-world rendering is delivered by the Phase B client mod.)"
-            )),
-            false);
+        source.sendSuccess(() -> Component.literal(message), false);
         return Command.SINGLE_SUCCESS;
     }
 
-    private static MutableComponent summarize(int untracked, int modified, int removed) {
-        MutableComponent out = Component.empty();
-        if (untracked > 0) {
-            out.append(Component.literal(untracked + " new "));
+    private static int runAdd(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        String pattern = StringArgumentType.getString(ctx, "path");
+        AddResult result = GitManager.add(worldDir(source.getServer()), pattern);
+
+        return switch (result) {
+            case AddResult.Added(var count) -> {
+                source.sendSuccess(
+                    () -> Component.literal("Staged " + count + " file(s) matching '" + pattern + "'."), true);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case AddResult.NothingMatched(var p) -> {
+                source.sendFailure(
+                    Component.literal("No files matched pattern '" + p + "'."));
+                yield 0;
+            }
+            case AddResult.Failed(var error) -> {
+                source.sendFailure(Component.literal("Failed to add: " + error));
+                yield 0;
+            }
+        };
+    }
+
+    private static int runCommitDefault(CommandContext<CommandSourceStack> ctx) {
+        return doCommit(ctx, defaultCommitMessage(ctx.getSource()));
+    }
+
+    private static int runCommit(CommandContext<CommandSourceStack> ctx) {
+        return doCommit(ctx, StringArgumentType.getString(ctx, "message"));
+    }
+
+    private static int doCommit(CommandContext<CommandSourceStack> ctx, String message) {
+        CommandSourceStack source = ctx.getSource();
+        CommitResult result = GitManager.commit(
+            worldDir(source.getServer()), message, authorFor(source));
+
+        return switch (result) {
+            case CommitResult.Created(var sha, var msg) -> {
+                // Everything up to this commit is now history — the overlay
+                // should go back to showing nothing until the next change.
+                BlockChangeTracker.getInstance().clear();
+                source.sendSuccess(
+                    () -> Component.literal("Created commit " + sha + ": " + msg), true);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case CommitResult.NothingToCommit() -> {
+                source.sendFailure(
+                    Component.literal("Nothing to commit. Use /git add <path> first."));
+                yield 0;
+            }
+            case CommitResult.Failed(var error) -> {
+                source.sendFailure(Component.literal("Failed to commit: " + error));
+                yield 0;
+            }
+        };
+    }
+
+    // ---------------------------------------------------------------------
+    // Identity helpers
+    // ---------------------------------------------------------------------
+
+    /**
+     * Default commit message used when the player runs {@code /git commit}
+     * without an explicit message.
+     */
+    private static String defaultCommitMessage(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player != null) {
+            return "Snapshot by " + player.getName().getString();
         }
-        if (modified > 0) {
-            if (!out.getString().isEmpty()) out.append(Component.literal(" / "));
-            out.append(Component.literal(modified + " modified "));
+        return "Server snapshot";
+    }
+
+    /**
+     * Build a {@link PersonIdent} for the {@link CommitResult} author/committer
+     * from the executing source.
+     *
+     * <p>For a Minecraft player the identity is
+     * {@code <name>.<uuid>@gitmc.invalid} — the {@code .invalid} TLD is
+     * non-routable (RFC 2606), so it's safe to use a real-looking address
+     * without leaking an actual inbox. For a command-block / console
+     * source we fall back to {@code Server <server@gitmc.invalid>}.
+     */
+    private static PersonIdent authorFor(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player != null) {
+            String name = player.getName().getString();
+            String uuid = player.getUUID().toString();
+            return new PersonIdent(name, name + "." + uuid + "@gitmc.invalid");
         }
-        if (removed > 0) {
-            if (!out.getString().isEmpty()) out.append(Component.literal(" / "));
-            out.append(Component.literal(removed + " removed "));
-        }
-        return out;
+        return new PersonIdent("Server", "server@gitmc.invalid");
+    }
+
+    /**
+     * Resolves the world's save root directory.
+     *
+     * <p>In 26.2, {@code LevelResource.LEVEL_DATA_FILE} maps to
+     * {@code <worldRoot>/level.dat}; the directory containing that file is
+     * the world save root. {@code MinecraftServer.storageSource} is
+     * protected, so {@link MinecraftServer#getWorldPath(LevelResource)} is
+     * the only public surface that reaches the storage backend.
+     */
+    private static File worldDir(MinecraftServer server) {
+        return server.getWorldPath(LevelResource.LEVEL_DATA_FILE).getParent().toFile();
     }
 }

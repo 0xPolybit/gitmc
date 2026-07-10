@@ -1,37 +1,36 @@
 package dev.polybit.gitmc.block;
 
-import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.state.BlockState;
 
 /**
- * The difference between a position in the baseline and the same position
- * in the current world.
+ * A single position's block state change since the last {@code /git commit},
+ * as tracked by {@link BlockChangeTracker}.
  *
- * <p>Modelled as a sealed interface so the renderer (and the chat output,
- * if we add it later) can {@code switch} on the cases exhaustively.
+ * @param original the block state at this position when it was first touched
+ *                 since the last commit
+ * @param current  the block state at this position right now
  */
-public sealed interface BlockDelta {
+public record BlockDelta(BlockState original, BlockState current) {
 
-    BlockPos pos();
+    /** How a position's state changed, for status reporting and overlay coloring. */
+    public enum Kind {
+        /** Was air, now isn't — a block was placed where none existed. */
+        ADDED,
+        /** Wasn't air, now is — a block was removed. */
+        REMOVED,
+        /** Neither state is air, but they differ — one block replaced another. */
+        MODIFIED
+    }
 
-    /**
-     * A block exists at this position now but not in the baseline —
-     * i.e. the player placed it since {@code /git init}. Rendered
-     * translucent green.
-     */
-    record Untracked(BlockPos pos, int currentStateId) implements BlockDelta {}
-
-    /**
-     * A block was in the baseline and still exists, but is now a
-     * different block type or has different state properties
-     * (door open/closed, water level, farmland wetness, etc.). Rendered
-     * translucent yellow.
-     */
-    record Modified(BlockPos pos, int baselineStateId, int currentStateId) implements BlockDelta {}
-
-    /**
-     * A block was in the baseline and is now gone (the position is air,
-     * or the chunk no longer contains a block here). Rendered translucent
-     * red.
-     */
-    record Removed(BlockPos pos, int baselineStateId) implements BlockDelta {}
+    public Kind kind() {
+        boolean wasAir = original.isAir();
+        boolean isAir = current.isAir();
+        if (wasAir && !isAir) {
+            return Kind.ADDED;
+        }
+        if (!wasAir && isAir) {
+            return Kind.REMOVED;
+        }
+        return Kind.MODIFIED;
+    }
 }

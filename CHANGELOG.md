@@ -14,20 +14,56 @@ soon as it has a non-`0.x` release.
   (held while the world is loaded), `level.dat_old` (regenerated every
   save), `logs/`, and `crash-reports/`. The chat success message reports
   whether the default was written.
-- Block-level change tracking: `/git init` captures the position +
-  state of every non-air block in every chunk that's been loaded for the
-  world (plus the chunk sections that contain them) into a baseline
-  persisted to `<world>/gitmc/baseline.nbt`. `/git status` then walks the
-  loaded chunks and categorizes each block into Untracked (green,
-  newly placed), Modified (yellow, type or state property changed), or
-  Removed (red, now air). The chat output reports the per-category
-  counts; the in-world translucent overlay (Phase B) renders the actual
-  boxes.
-- `/git status` accepts `show` (persistent highlights until
-  `/git status hide`) or `hide` (clear active highlights). With no
-  argument, `/git status` shows with a 30 s auto-fade.
-- Removed file-level JGit plumbing (the previous `/git add` /
-  `/git commit` commands) and the JGit dependency from the build.
+- **`/git add <path>`** — stages files matching the given JGit file
+  pattern (e.g. `.`, `*`, `region/`, `region/r.0.0.mca`). Returns the
+  number of files staged, or `NothingMatched` if the pattern matched
+  nothing.
+- **`/git commit [message]`** — creates a commit from whatever is
+  currently staged. The author and committer are set to the Minecraft
+  player who ran the command, with email
+  `<name>.<uuid>@gitmc.invalid` (the `.invalid` TLD is non-routable, so
+  the email is safe to publish). If no message is given, defaults to
+  `"Snapshot by <playername>"`. Console / command-block sources fall
+  back to `Server <server@gitmc.invalid>`. A successful commit also
+  clears the `/git status` block-change overlay.
+- **`/git status [show|hide]`** — in-world overlay highlighting blocks a
+  player has placed (translucent green), replaced (translucent yellow),
+  or broken (translucent red, as a ghost outline) since the last commit.
+  `/git status` and `/git status show` turn it on; `/git status hide`
+  turns it off. This replaces the earlier file-based
+  staged/unstaged/untracked text output — see the `block` package below
+  for the tracking design.
+  - `BlockChangeTracker` (new `dev.polybit.gitmc.block` package) records
+    only direct player actions: placing (via `BlockItemMixin`, since
+    Fabric API has no bundled block-place event) or breaking
+    (`PlayerBlockBreakEvents.AFTER`, registered in `GitMC.onInitialize`).
+    Physics-driven changes (pistons, liquids, crop growth, redstone,
+    explosions, falling blocks) are deliberately excluded to keep the
+    overlay meaningful.
+  - Per position: the first touch since the last commit records the
+    "original" state; later touches update only the "current" state.
+    Reverting a position back to its original state drops it from
+    tracking entirely (net-zero change).
+  - Tracking is in-memory and resets on process restart — it's a live
+    diff view, not a persisted log.
+  - Rendering uses a new `client` source set (`GitMCClient`, registered
+    as the `client` entrypoint), hooking
+    `LevelRenderEvents.COLLECT_SUBMITS` and emitting a translucent
+    filled cube per tracked position via
+    `SubmitNodeCollector.submitCustomGeometry` and
+    `RenderTypes.debugFilledBox()` — Minecraft 26.2's rendering pipeline
+    replaced the older `WorldRenderEvents` + direct `VertexConsumer`
+    pattern with this submit-node/collector architecture.
+  - Scoped to singleplayer/LAN for now: the tracker is a single
+    in-process instance shared by the client and the integrated server,
+    so the `show`/`hide` toggle (run via a server-side command) reaches
+    the renderer (client-side) without a network channel. A real
+    dedicated server still runs the tracking and reports a count via
+    `/git status`, but remote clients won't see the overlay until a
+    networking layer is added.
+- Build workflow: `./gradlew installMod` now builds and copies the jar
+  into the launcher's `mods/` directory (default `%APPDATA%\.minecraft\mods`,
+  override with `-Pgitmc.mods.dir=…` or `GITMC_MODS_DIR`).
 
 ### Changed
 
@@ -35,17 +71,16 @@ soon as it has a non-`0.x` release.
   identifier (`gitmc`), package (`dev.polybit.gitmc`), jar file name,
   and class names are unchanged. Error messages that referenced
   `/gitmc init` / `/gitmc add` now point at `/git init` / `/git add`.
-- Build workflow: `./gradlew installMod` now builds and copies the jar
-  into the launcher's `mods/` directory (default `%APPDATA%\.minecraft\mods`,
-  override with `-Pgitmc.mods.dir=…` or `GITMC_MODS_DIR`).
+- `/git status` no longer prints git's own staged/unstaged/untracked
+  file list — see the block-change overlay entry above. `GitManager`'s
+  `status()` method and `StatusResult` type were removed as dead code.
 
 ### Planned
 
-- Client-side translucent overlay (the in-world visual that pairs
-  with `/git status show`).
 - `/git log` with player attribution
 - `/git branch` / `/git checkout`
 - `/git revert`
+- Dedicated-server networking for the block-change overlay
 - Optional Mod Menu integration
 
 ## [0.1.0] — 2026-07-09

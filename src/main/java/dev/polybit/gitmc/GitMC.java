@@ -1,36 +1,59 @@
 package dev.polybit.gitmc;
 
-import dev.polybit.gitmc.block.BlockChangeTrackerManager;
+import dev.polybit.gitmc.block.BlockChangeTracker;
+import dev.polybit.gitmc.command.GitMCCommands;
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Fabric entry point for GitMC.
  *
- * <p>GitMC provides block-level version control for Minecraft worlds: a
- * player can snapshot the state of their world's loaded chunks with
- * {@code /git init}, see what's changed since via {@code /git status
- * [show|hide]}, and reset with a future {@code /git reset} command.
+ * <p>GitMC brings git-style version control to Minecraft worlds: a player can
+ * initialize a git repository inside the currently loaded world's save
+ * directory and snapshot progress with commits, branch off experiments, merge
+ * changes back together, and revert when a build goes sideways — all from
+ * in-game commands.
  *
- * <p>The tracker is per-world, persisted to {@code <world>/gitmc/baseline.nbt}
- * on init, and rehydrated when the world loads.
+ * <p>This class wires up the {@link ModInitializer} hook, registers the
+ * {@code /git} command tree, and registers the block-break half of
+ * {@link BlockChangeTracker}'s player-action tracking (the placement half
+ * lives in {@code BlockItemMixin}, since Fabric API has no bundled "block
+ * placed" event). The actual git operations are encapsulated in
+ * {@link dev.polybit.gitmc.git.GitManager}.
  */
 public final class GitMC implements ModInitializer {
 
-    /** Mod id; also the logger name and the (former) root command name. */
+    /** Mod id; also the logger name and the root command name. */
     public static final String MOD_ID = "gitmc";
 
     /**
-     * Mirrors {@code gradle.properties}. The {@code fabric.mod.json} baked
-     * into the jar is the authoritative source of truth; this constant
-     * exists for log messages.
+     * Human-readable version string.
+     *
+     * <p>Mirrored from {@code gradle.properties}. The {@code fabric.mod.json}
+     * baked into the jar is the authoritative source of truth — this constant
+     * exists for log messages and for callers that want to display the
+     * running version. Bump both together.
      */
     public static final String VERSION = "0.1.0";
 
-    public static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(MOD_ID);
+    public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     @Override
     public void onInitialize() {
         LOGGER.info("Initializing {} v{}", MOD_ID, VERSION);
-        BlockChangeTrackerManager.register();
+        CommandRegistrationCallback.EVENT.register(GitMCCommands::register);
+
+        // PlayerBlockBreakEvents fires on both logical sides in singleplayer;
+        // only the server-side firing is authoritative, so skip the client one.
+        PlayerBlockBreakEvents.AFTER.register((world, player, pos, state, blockEntity) -> {
+            if (world.isClientSide()) {
+                return;
+            }
+            BlockChangeTracker.getInstance()
+                .recordChange(world.dimension(), pos, state, world.getBlockState(pos));
+        });
     }
 }

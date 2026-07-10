@@ -74,10 +74,14 @@ GitMC brings the familiar git workflow to Minecraft. It initializes a real git r
   if you don't pass one. Successfully committing also clears the
   `/git status` overlay, since everything up to that point is now
   part of the repository's history.
+- **`/git log [count]`** — the most recent commits (10 by default, up
+  to 50 with an explicit count), newest first: short hash, message,
+  author, and a humanized relative time (*"3 minutes ago"*, *"2 days
+  ago"*, …). Says *"No commits yet."* if you haven't committed
+  anything.
 
 ### Planned
 
-- `/git log` — list recent commits with player attribution and timestamps.
 - `/git branch [name]` / `/git checkout <branch>` — branch to try risky
   changes, then come back.
 - `/git revert <commit>` — roll a world back to an earlier snapshot.
@@ -193,7 +197,8 @@ console) to bootstrap the repo in the world save directory.
 ├── add <path>            Stage files matching <path> (`.`, `*`, a directory, or a specific file).
 ├── add <pos>             Stage the region file(s) covering a single block position.
 ├── add <from> <to>       Stage the region file(s) covering a coordinate range.
-└── commit [message]      Commit whatever is staged, attributing the author to the running player.
+├── commit [message]      Commit whatever is staged, attributing the author to the running player.
+└── log [count]           Show the most recent commits (default 10, max 50).
 ```
 
 By default the repo is untracked after `init`. The typical loop is
@@ -314,8 +319,8 @@ gitmc/
 - [x] `/git add`, `/git commit` with player attribution
 - [x] `/git status show|hide` — in-world block-change overlay (singleplayer/LAN)
 - [x] Coordinate-based `/git add` (single position or range → region files)
+- [x] `/git log` with player attribution and relative timestamps
 - [ ] Dedicated-server networking for the block-change overlay
-- [ ] `/git log` with player attribution
 - [ ] `/git branch` / `/git checkout`
 - [ ] `/git revert`
 - [ ] Optional Mod Menu integration

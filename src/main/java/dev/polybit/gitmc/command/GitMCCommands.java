@@ -2,6 +2,7 @@ package dev.polybit.gitmc.command;
 
 import com.mojang.brigadier.Command;
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import dev.polybit.gitmc.block.BlockChangeTracker;
@@ -9,13 +10,17 @@ import dev.polybit.gitmc.git.GitManager;
 import dev.polybit.gitmc.git.GitManager.AddResult;
 import dev.polybit.gitmc.git.GitManager.CommitResult;
 import dev.polybit.gitmc.git.GitManager.InitResult;
+import dev.polybit.gitmc.git.GitManager.LogEntry;
+import dev.polybit.gitmc.git.GitManager.LogResult;
 import dev.polybit.gitmc.git.RegionFiles;
+import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands.CommandSelection;
 import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
@@ -24,6 +29,9 @@ import net.minecraft.world.level.storage.LevelResource;
 import org.eclipse.jgit.lib.PersonIdent;
 
 import java.io.File;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 import java.util.Set;
 
 import static net.minecraft.commands.Commands.argument;
@@ -74,6 +82,12 @@ import static net.minecraft.commands.Commands.literal;
  */
 public final class GitMCCommands {
 
+    /** {@code /git log} with no count argument shows this many entries. */
+    private static final int DEFAULT_LOG_COUNT = 10;
+
+    /** Upper bound on {@code /git log <count>}, to keep a single chat message reasonable. */
+    private static final int MAX_LOG_COUNT = 50;
+
     private GitMCCommands() {
     }
 
@@ -101,6 +115,10 @@ public final class GitMCCommands {
                     .executes(GitMCCommands::runCommitDefault)
                     .then(argument("message", StringArgumentType.string())
                         .executes(GitMCCommands::runCommit)))
+                .then(literal("log")
+                    .executes(GitMCCommands::runLogDefault)
+                    .then(argument("count", IntegerArgumentType.integer(1, MAX_LOG_COUNT))
+                        .executes(GitMCCommands::runLog)))
         );
     }
 
@@ -267,6 +285,86 @@ public final class GitMCCommands {
                 yield 0;
             }
         };
+    }
+
+    /** {@code /git log} (no argument): the {@link #DEFAULT_LOG_COUNT} most recent commits. */
+    private static int runLogDefault(CommandContext<CommandSourceStack> ctx) {
+        return doLog(ctx, DEFAULT_LOG_COUNT);
+    }
+
+    /** {@code /git log <count>}: the {@code count} most recent commits. */
+    private static int runLog(CommandContext<CommandSourceStack> ctx) {
+        return doLog(ctx, IntegerArgumentType.getInteger(ctx, "count"));
+    }
+
+    private static int doLog(CommandContext<CommandSourceStack> ctx, int count) {
+        CommandSourceStack source = ctx.getSource();
+        LogResult result = GitManager.log(worldDir(source.getServer()), count);
+
+        return switch (result) {
+            case LogResult.Entries(var entries) -> {
+                source.sendSuccess(() -> formatLog(entries), false);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case LogResult.Empty() -> {
+                source.sendFailure(Component.literal("No commits yet. Use /git commit first."));
+                yield 0;
+            }
+            case LogResult.Failed(var error) -> {
+                source.sendFailure(Component.literal("Failed to read log: " + error));
+                yield 0;
+            }
+        };
+    }
+
+    /**
+     * Renders a list of {@link LogEntry} as one chat message, newest first,
+     * one line per commit: {@code <sha> <message> (<author>, <relative time>)}.
+     */
+    private static Component formatLog(List<LogEntry> entries) {
+        MutableComponent out = Component.empty();
+        Instant now = Instant.now();
+        for (int i = 0; i < entries.size(); i++) {
+            LogEntry entry = entries.get(i);
+            if (i > 0) {
+                out.append(Component.literal("\n"));
+            }
+            out.append(Component.literal(entry.shortSha()).withStyle(ChatFormatting.GOLD));
+            out.append(Component.literal(" " + entry.message()).withStyle(ChatFormatting.WHITE));
+            out.append(Component.literal(
+                " (" + entry.authorName() + ", " + relativeTime(entry.timestamp(), now) + ")"
+            ).withStyle(ChatFormatting.GRAY));
+        }
+        return out;
+    }
+
+    /** Humanizes a duration as "just now" / "N minute(s) ago" / etc., coarsest unit that fits. */
+    private static String relativeTime(Instant then, Instant now) {
+        long seconds = Math.max(0, Duration.between(then, now).getSeconds());
+        if (seconds < 60) {
+            return "just now";
+        }
+        long minutes = seconds / 60;
+        if (minutes < 60) {
+            return plural(minutes, "minute");
+        }
+        long hours = minutes / 60;
+        if (hours < 24) {
+            return plural(hours, "hour");
+        }
+        long days = hours / 24;
+        if (days < 30) {
+            return plural(days, "day");
+        }
+        long months = days / 30;
+        if (months < 12) {
+            return plural(months, "month");
+        }
+        return plural(days / 365, "year");
+    }
+
+    private static String plural(long count, String unit) {
+        return count + " " + unit + (count == 1 ? "" : "s") + " ago";
     }
 
     // ---------------------------------------------------------------------

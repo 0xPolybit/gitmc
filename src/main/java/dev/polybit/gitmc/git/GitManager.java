@@ -4,6 +4,7 @@ import org.eclipse.jgit.api.AddCommand;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.api.errors.NoHeadException;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.slf4j.Logger;
@@ -13,7 +14,10 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -77,6 +81,17 @@ public final class GitManager {
         record NothingToCommit() implements CommitResult {}
         record Failed(String error) implements CommitResult {}
     }
+
+    /** Outcome of {@link #log(File, int)}. */
+    public sealed interface LogResult {
+        record Entries(List<LogEntry> entries) implements LogResult {}
+        /** No commits yet — distinct from {@link Failed} since it isn't an error. */
+        record Empty() implements LogResult {}
+        record Failed(String error) implements LogResult {}
+    }
+
+    /** One commit's summary, as shown by {@code /git log}. */
+    public record LogEntry(String shortSha, String message, String authorName, Instant timestamp) {}
 
     // ---------------------------------------------------------------------
     // Operations
@@ -204,6 +219,39 @@ public final class GitManager {
             String failure = describe(e);
             LOGGER.warn("git commit failed in {}: {}", worldDir, failure, e);
             return new CommitResult.Failed(failure);
+        }
+    }
+
+    /**
+     * Returns the {@code maxCount} most recent commits, newest first. An
+     * empty repository (no commits yet) is {@link LogResult.Empty}, not a
+     * failure — JGit itself signals this by throwing {@link NoHeadException}
+     * from {@code LogCommand.call()}, which we translate here so callers
+     * never need to know that.
+     */
+    public static LogResult log(File worldDir, int maxCount) {
+        if (!isRepo(worldDir)) {
+            return new LogResult.Failed("Not a git repository. Run /git init first.");
+        }
+        try (Git git = Git.open(worldDir)) {
+            List<LogEntry> entries = new ArrayList<>();
+            for (RevCommit commit : git.log().setMaxCount(maxCount).call()) {
+                PersonIdent author = commit.getAuthorIdent();
+                String sha = commit.getName();
+                entries.add(new LogEntry(
+                    sha.substring(0, Math.min(7, sha.length())),
+                    commit.getShortMessage(),
+                    author.getName(),
+                    author.getWhenAsInstant()
+                ));
+            }
+            return entries.isEmpty() ? new LogResult.Empty() : new LogResult.Entries(entries);
+        } catch (NoHeadException e) {
+            return new LogResult.Empty();
+        } catch (IOException | GitAPIException | RuntimeException e) {
+            String failure = describe(e);
+            LOGGER.warn("git log failed in {}: {}", worldDir, failure, e);
+            return new LogResult.Failed(failure);
         }
     }
 

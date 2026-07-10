@@ -9,6 +9,16 @@ soon as it has a non-`0.x` release.
 
 ### Added
 
+- **`/git log [count]`** — the `count` most recent commits (default 10,
+  max 50), newest first: short hash (gold), message (white), and
+  `(author, relative time)` (gray) — e.g. `a1b2c3d Placed a creeper
+  farm at spawn (Steve, 3 minutes ago)`. `GitManager.log(File, int)`
+  translates JGit's `NoHeadException` (thrown by `LogCommand.call()`
+  on a repo with no commits) into a distinct `LogResult.Empty` case
+  rather than treating "no commits yet" as a failure. Relative-time
+  formatting (`GitMCCommands.relativeTime`) is a small self-contained
+  helper with no external dependency — just now / N minutes / hours /
+  days / months / years ago, coarsest unit that fits.
 - Default `.gitignore` is written into the world save directory on
   `/git init`. Skips if the user already has one. Covers `session.lock`
   (held while the world is loaded), `level.dat_old` (regenerated every

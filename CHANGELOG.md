@@ -18,6 +18,32 @@ soon as it has a non-`0.x` release.
   pattern (e.g. `.`, `*`, `region/`, `region/r.0.0.mca`). Returns the
   number of files staged, or `NothingMatched` if the pattern matched
   nothing.
+- **`/git add <pos>`** and **`/git add <from> <to>`** — stage by block
+  coordinate instead of file pattern (same argument shape as vanilla
+  `/fill`, including `~`-relative coordinates). Resolved via a new
+  `dev.polybit.gitmc.git.RegionFiles` helper:
+  - Converts the coordinate/range to the region-file coordinates it
+    spans (a region file is 512×512 blocks / 32×32 chunks in the X/Z
+    plane; Y doesn't affect which file a position falls into, since a
+    region file covers a full chunk column top to bottom).
+  - For each spanned region coordinate, stages whichever of
+    `region/r.X.Z.mca`, `entities/r.X.Z.mca`, `poi/r.X.Z.mca` actually
+    exist on disk — files that were never generated are silently
+    skipped, not an error.
+  - Resolves the dimension folder (including custom/modded dimensions)
+    via `LevelStorageAccess.getDimensionPath`, the same method
+    Minecraft itself uses, rather than reimplementing the
+    DIM-1/DIM1/`dimensions/<namespace>/<path>` convention by hand.
+    Reaching it required a new `MinecraftServerAccessor` mixin
+    (`@Accessor` on the protected `storageSource` field) — the same
+    class of mixin as `BlockItemMixin`, just simpler (no `@Inject`
+    logic, just a getter shim).
+  - Dimension is the executing source's current one
+    (`CommandSourceStack.getLevel().dimension()`), matching how
+    vanilla `/fill` and `/setblock` resolve "current dimension".
+  - `GitManager.addPaths(File, Collection<String>)` stages an
+    already-resolved set of literal paths in one JGit `AddCommand`
+    call, as opposed to `add(File, String)`'s single glob pattern.
 - **`/git commit [message]`** — creates a commit from whatever is
   currently staged. The author and committer are set to the Minecraft
   player who ran the command, with email

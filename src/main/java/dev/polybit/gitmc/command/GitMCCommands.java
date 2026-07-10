@@ -9,16 +9,22 @@ import dev.polybit.gitmc.git.GitManager;
 import dev.polybit.gitmc.git.GitManager.AddResult;
 import dev.polybit.gitmc.git.GitManager.CommitResult;
 import dev.polybit.gitmc.git.GitManager.InitResult;
+import dev.polybit.gitmc.git.RegionFiles;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands.CommandSelection;
+import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.storage.LevelResource;
 import org.eclipse.jgit.lib.PersonIdent;
 
 import java.io.File;
+import java.util.Set;
 
 import static net.minecraft.commands.Commands.argument;
 import static net.minecraft.commands.Commands.literal;
@@ -39,6 +45,17 @@ import static net.minecraft.commands.Commands.literal;
  *   <li>{@code MinecraftServer.getSavePath(WorldSavePath.ROOT)} →
  *       {@code MinecraftServer.getWorldPath(LevelResource.LEVEL_DATA_FILE).getParent()}</li>
  * </ul>
+ *
+ * <h2>{@code /git add}</h2>
+ * In addition to a JGit file pattern, {@code /git add} accepts block
+ * coordinates: a single position, or a {@code from}/{@code to} range (same
+ * shape as vanilla {@code /fill}, including {@code ~}-relative coordinates).
+ * Coordinates are resolved to the region/entities/poi files that actually
+ * exist on disk for that area — see {@link RegionFiles} — so a player can
+ * stage "what I built over there" without knowing Minecraft's region-file
+ * naming scheme. Coordinates are relative to the executing source's current
+ * dimension ({@link CommandSourceStack#getLevel()}), same as vanilla
+ * world-editing commands.
  *
  * <h2>{@code /git status}</h2>
  * Unlike the other subcommands, {@code status} does not report git's own
@@ -72,9 +89,14 @@ public final class GitMCCommands {
                     .executes(GitMCCommands::runStatusTimed)
                     .then(literal("show").executes(GitMCCommands::runStatusShow))
                     .then(literal("hide").executes(GitMCCommands::runStatusHide)))
-                .then(literal("add").then(
-                    argument("path", StringArgumentType.string())
-                        .executes(GitMCCommands::runAdd)))
+                .then(literal("add")
+                    .then(argument("path", StringArgumentType.string())
+                        .executes(GitMCCommands::runAdd))
+                    .then(argument("pos", BlockPosArgument.blockPos())
+                        .executes(GitMCCommands::runAddPos))
+                    .then(argument("from", BlockPosArgument.blockPos())
+                        .then(argument("to", BlockPosArgument.blockPos())
+                            .executes(GitMCCommands::runAddRange))))
                 .then(literal("commit")
                     .executes(GitMCCommands::runCommitDefault)
                     .then(argument("message", StringArgumentType.string())
@@ -164,6 +186,53 @@ public final class GitMCCommands {
                 yield 0;
             }
         };
+    }
+
+    /** {@code /git add <pos>}: stage the region file(s) covering a single block position. */
+    private static int runAddPos(CommandContext<CommandSourceStack> ctx) {
+        BlockPos pos = BlockPosArgument.getBlockPos(ctx, "pos");
+        return doAddRegion(ctx.getSource(), pos, pos);
+    }
+
+    /** {@code /git add <from> <to>}: stage the region file(s) covering a coordinate range. */
+    private static int runAddRange(CommandContext<CommandSourceStack> ctx) {
+        BlockPos from = BlockPosArgument.getBlockPos(ctx, "from");
+        BlockPos to = BlockPosArgument.getBlockPos(ctx, "to");
+        return doAddRegion(ctx.getSource(), from, to);
+    }
+
+    private static int doAddRegion(CommandSourceStack source, BlockPos from, BlockPos to) {
+        MinecraftServer server = source.getServer();
+        ResourceKey<Level> dimension = source.getLevel().dimension();
+        Set<String> patterns = RegionFiles.resolve(server, dimension, from, to);
+        AddResult result = GitManager.addPaths(worldDir(server), patterns);
+        String range = describeRange(from, to);
+
+        return switch (result) {
+            case AddResult.Added(var count) -> {
+                source.sendSuccess(
+                    () -> Component.literal("Staged " + count + " file(s) covering " + range + "."), true);
+                yield Command.SINGLE_SUCCESS;
+            }
+            case AddResult.NothingMatched(var ignored) -> {
+                source.sendFailure(Component.literal("No files found for " + range + "."));
+                yield 0;
+            }
+            case AddResult.Failed(var error) -> {
+                source.sendFailure(Component.literal("Failed to add: " + error));
+                yield 0;
+            }
+        };
+    }
+
+    /** Formats a position or range for chat feedback: {@code (x, y, z)} or {@code (x, y, z) to (x, y, z)}. */
+    private static String describeRange(BlockPos from, BlockPos to) {
+        String fromStr = "(" + from.getX() + ", " + from.getY() + ", " + from.getZ() + ")";
+        if (from.equals(to)) {
+            return fromStr;
+        }
+        String toStr = "(" + to.getX() + ", " + to.getY() + ", " + to.getZ() + ")";
+        return fromStr + " to " + toStr;
     }
 
     private static int runCommitDefault(CommandContext<CommandSourceStack> ctx) {

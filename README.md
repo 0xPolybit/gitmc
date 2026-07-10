@@ -24,6 +24,7 @@ GitMC brings the familiar git workflow to Minecraft. It initializes a real git r
 
 - [Features](#features)
 - [Block-change overlay](#block-change-overlay)
+- [Coordinate-based staging](#coordinate-based-staging)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -61,6 +62,12 @@ GitMC brings the familiar git workflow to Minecraft. It initializes a real git r
   `.` adds everything in the world save (respecting `.gitignore`),
   `*` is top-level only, and you can target specific files or
   directories (e.g. `region/`, `playerdata/yourname.dat`).
+- **`/git add <pos>`** / **`/git add <from> <to>`** — stage by block
+  coordinate instead of file pattern: a single position, or a range
+  (same shape as vanilla `/fill`, `~`-relative coordinates included).
+  Resolves to whichever region/entities/poi files on disk actually
+  cover that area, in your current dimension — see
+  [Coordinate-based staging](#coordinate-based-staging) below.
 - **`/git commit [message]`** — commit whatever is currently staged.
   The author and committer are the Minecraft player who ran the
   command; the message defaults to *"Snapshot by &lt;playername&gt;"*
@@ -119,6 +126,35 @@ networking involved yet. On a real dedicated server, `/git status`
 still runs and reports a change count, but remote clients won't see the
 colored overlay until a networking layer is added (see Roadmap).
 
+## Coordinate-based staging
+
+`/git add <pos>` and `/git add <from> <to>` let you stage by location
+instead of by file pattern — handy when you know roughly where you built
+something but not which region file that maps to.
+
+```
+/git add 100 64 -200                  # single position
+/git add 100 64 -200 250 90 -50       # a range (like /fill's <from> <to>)
+/git add ~ ~ ~ ~16 ~ ~16              # relative to where you're standing
+```
+
+**How it resolves:** Minecraft partitions each dimension into 512×512-block
+(32×32-chunk) region files. A coordinate or range is converted to the set
+of region coordinates it spans, then for each one, whichever of
+`region/r.X.Z.mca`, `entities/r.X.Z.mca`, and `poi/r.X.Z.mca` actually
+exist on disk gets staged. Files that were never generated (an unexplored
+area) are silently skipped, not an error.
+
+**Y is accepted but doesn't narrow the file selection** — a region file
+covers a full chunk column, top to bottom, so only the X/Z bounds affect
+which files match. Giving Y is still natural since that's how you'd
+normally describe a location (e.g. pasting F3 coordinates), and range mode
+takes it for a familiar `/fill`-shaped command even though it isn't load-bearing.
+
+**Dimension:** resolved from your current dimension when you run the
+command (the same way `/fill` and `/setblock` do) — running it while
+standing in the Nether stages Nether region files, not Overworld ones.
+
 ## Requirements
 
 | | Minimum | Notes |
@@ -155,6 +191,8 @@ console) to bootstrap the repo in the world save directory.
 ├── status show           Show the block-change overlay until explicitly hidden.
 ├── status hide           Hide the overlay immediately.
 ├── add <path>            Stage files matching <path> (`.`, `*`, a directory, or a specific file).
+├── add <pos>             Stage the region file(s) covering a single block position.
+├── add <from> <to>       Stage the region file(s) covering a coordinate range.
 └── commit [message]      Commit whatever is staged, attributing the author to the running player.
 ```
 
@@ -242,9 +280,11 @@ gitmc/
 │   │   │   ├── command/
 │   │   │   │   └── GitMCCommands.java            # /git command tree
 │   │   │   ├── git/
-│   │   │   │   └── GitManager.java               # JGit wrapper
+│   │   │   │   ├── GitManager.java               # JGit wrapper
+│   │   │   │   └── RegionFiles.java              # Coordinate → region-file resolution
 │   │   │   └── mixin/
-│   │   │       └── BlockItemMixin.java           # Detects successful player block placement
+│   │   │       ├── BlockItemMixin.java           # Detects successful player block placement
+│   │   │       └── MinecraftServerAccessor.java  # Exposes storageSource for dimension paths
 │   │   └── resources/
 │   │       ├── fabric.mod.json                   # Mod metadata
 │   │       └── gitmc.mixins.json                 # Mixin config
@@ -273,6 +313,7 @@ gitmc/
 - [x] Migration to the non-obfuscated Minecraft 26.x API and Loom plugin
 - [x] `/git add`, `/git commit` with player attribution
 - [x] `/git status show|hide` — in-world block-change overlay (singleplayer/LAN)
+- [x] Coordinate-based `/git add` (single position or range → region files)
 - [ ] Dedicated-server networking for the block-change overlay
 - [ ] `/git log` with player attribution
 - [ ] `/git branch` / `/git checkout`

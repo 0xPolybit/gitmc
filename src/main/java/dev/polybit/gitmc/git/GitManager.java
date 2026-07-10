@@ -13,6 +13,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Collection;
 import java.util.Set;
 
 /**
@@ -133,6 +134,40 @@ public final class GitManager {
         } catch (IOException | GitAPIException | RuntimeException e) {
             String failure = describe(e);
             LOGGER.warn("git add failed in {} (pattern={}): {}", worldDir, pattern, failure, e);
+            return new AddResult.Failed(failure);
+        }
+    }
+
+    /**
+     * Stages exactly the given repository-relative file paths — used by the
+     * coordinate-based {@code /git add} variants, where {@link RegionFiles}
+     * has already resolved precisely which region/entities/poi files exist
+     * on disk for the requested position or range. Unlike {@link #add(File, String)},
+     * this isn't a glob pattern; each entry is staged as a literal path.
+     */
+    public static AddResult addPaths(File worldDir, Collection<String> relativePaths) {
+        if (!isRepo(worldDir)) {
+            return new AddResult.Failed("Not a git repository. Run /git init first.");
+        }
+        if (relativePaths.isEmpty()) {
+            return new AddResult.NothingMatched("no region files at those coordinates");
+        }
+        try (Git git = Git.open(worldDir)) {
+            int before = stagedFileCount(git);
+            AddCommand add = git.add();
+            for (String path : relativePaths) {
+                add.addFilepattern(path);
+            }
+            add.call();
+            int after = stagedFileCount(git);
+            int added = after - before;
+            if (added <= 0) {
+                return new AddResult.NothingMatched("already staged or unchanged");
+            }
+            return new AddResult.Added(added);
+        } catch (IOException | GitAPIException | RuntimeException e) {
+            String failure = describe(e);
+            LOGGER.warn("git add (paths={}) failed in {}: {}", relativePaths, worldDir, failure, e);
             return new AddResult.Failed(failure);
         }
     }

@@ -3,7 +3,8 @@
   "minVersion": "0.8",
   "package": "dev.polybit.gitmc.mixin",
   "mixins": [
-    "BlockItemMixin"
+    "BlockItemMixin",
+    "MinecraftServerAccessor"
   ],
   "client": [],
   "server": [],

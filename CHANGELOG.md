@@ -22,13 +22,27 @@ soon as it has a non-`0.x` release.
   autosaving right back over whatever checkout just wrote, silently
   undoing it.
   - `GitManager.planCheckout(File, String)` computes, without mutating
-    anything: whether the branch exists yet, whether the working tree
-    has uncommitted changes (blocks checkout outright if so), and —
-    via comparing `repo.resolve("HEAD^{tree}")` against
-    `repo.resolve("refs/heads/<branch>^{tree}")` — whether the checkout
-    would actually change any file content. A brand-new branch is
+    anything: whether the branch exists yet; via comparing
+    `repo.resolve("HEAD^{tree}")` against
+    `repo.resolve("refs/heads/<branch>^{tree}")`, whether the checkout
+    would actually change any file content (a brand-new branch is
     always tree-identical to HEAD, so creating one and switching to it
-    never trips this.
+    never trips anything below); and — only when content would
+    change — `findConflictingPaths` computes the intersection of
+    "paths that differ between the two branches" (via a tree-to-tree
+    `DiffCommand`) and "paths currently dirty in the working tree"
+    (`git.status()`). Only a path in *both* sets blocks the checkout.
+    This intentionally mirrors real git's own checkout safety
+    semantics (only refuse when a file that would actually be touched
+    is also locally modified) rather than blocking on *any* difference
+    anywhere in the repo — a live Minecraft world's autosave
+    constantly rewrites `level.dat`, region files, and player data
+    regardless of what a player actually built, so a blanket dirtiness
+    check would treat the tree as "uncommitted" almost permanently,
+    even seconds after a deliberate `/git add` + `/git commit`, and
+    refuse nearly every checkout. (Originally shipped with exactly that
+    blanket check — fixed after being reported as blocking checkout
+    even with everything committed.)
   - `GitManager.checkout(File, String)` re-runs the identical
     preflight check before performing the switch (`CheckoutPreflight`,
     shared by both methods), so preview and execution can never

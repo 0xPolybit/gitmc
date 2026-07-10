@@ -186,15 +186,23 @@ checkout is built around that risk:
   usually does.
 - **`/git checkout <branch> confirm`** forces a full save first (so the
   check above reflects real on-disk state, not stale in-memory data),
-  refuses outright if you have uncommitted changes, and — only if the
-  checkout actually changes file content — closes the world afterward
-  so the stale in-memory state can never overwrite the fresh checkout.
-  Just reopen the world to continue on the new branch.
+  and — only if the checkout actually changes file content — closes the
+  world afterward so the stale in-memory state can never overwrite the
+  fresh checkout. Just reopen the world to continue on the new branch.
 - The common "branch to try something risky" flow (`/git checkout
   new-branch-name confirm`, right after creating it) does **not** close
   the world, since nothing has diverged yet — you keep playing
   immediately. It's switching *back* to a branch with different history
   that triggers the safe-close.
+- Checkout only refuses when there's a genuine conflict: a file that
+  both differs between your current branch and the target, *and* has
+  uncommitted local changes. It deliberately does **not** block on "is
+  anything, anywhere, dirty" — a live world's autosave constantly
+  rewrites `level.dat`, region files, and player data regardless of
+  what you actually built, so a blanket dirtiness check would refuse
+  almost every checkout, even seconds after a deliberate `/git add` +
+  `/git commit`. If it does refuse, the message names the exact
+  conflicting file(s) so you know what to commit or discard.
 - Preview and confirm each independently recompute everything from
   scratch — there's no cached state between the two calls that could go
   stale or be tricked into skipping a check.

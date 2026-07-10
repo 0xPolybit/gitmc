@@ -37,6 +37,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static net.minecraft.commands.Commands.argument;
 import static net.minecraft.commands.Commands.literal;
@@ -481,10 +482,11 @@ public final class GitMCCommands {
                 source.sendFailure(Component.literal("Already on branch '" + b + "'."));
                 yield 0;
             }
-            case CheckoutPlan.DirtyWorkingTree(var count) -> {
+            case CheckoutPlan.Conflicts(var paths) -> {
                 source.sendFailure(Component.literal(
-                    "You have " + count + " uncommitted change(s) that would block checkout. "
-                        + "Use /git status, /git add, and /git commit first."));
+                    "Switching to '" + branch + "' would overwrite " + describeConflicts(paths)
+                        + " with uncommitted changes. Use /git add and /git commit first, "
+                        + "or discard the changes, then try again."));
                 yield 0;
             }
             case CheckoutPlan.Failed(var error) -> {
@@ -525,9 +527,11 @@ public final class GitMCCommands {
                 source.sendFailure(Component.literal("Already on branch '" + b + "'."));
                 yield 0;
             }
-            case CheckoutResult.DirtyWorkingTree(var count) -> {
+            case CheckoutResult.Conflicts(var paths) -> {
                 source.sendFailure(Component.literal(
-                    "You have " + count + " uncommitted change(s). Commit them with /git add and /git commit first."));
+                    "Switching to '" + branch + "' would overwrite " + describeConflicts(paths)
+                        + " with uncommitted changes. Use /git add and /git commit first, "
+                        + "or discard the changes, then try again."));
                 yield 0;
             }
             case CheckoutResult.Failed(var error) -> {
@@ -535,6 +539,16 @@ public final class GitMCCommands {
                 yield 0;
             }
         };
+    }
+
+    /** Formats conflicting paths for chat: lists up to a few, then "and N more". */
+    private static String describeConflicts(List<String> paths) {
+        int maxListed = 5;
+        String joined = paths.stream().limit(maxListed).collect(Collectors.joining(", "));
+        if (paths.size() > maxListed) {
+            joined += ", and " + (paths.size() - maxListed) + " more";
+        }
+        return paths.size() + " file(s) (" + joined + ")";
     }
 
     // ---------------------------------------------------------------------

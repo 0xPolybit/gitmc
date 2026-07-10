@@ -6,11 +6,14 @@ import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.NoHeadException;
 import org.eclipse.jgit.api.errors.RefAlreadyExistsException;
+import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,6 +24,7 @@ import java.nio.file.Files;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -140,7 +144,13 @@ public final class GitManager {
          */
         record Ready(boolean branchExists, boolean requiresWorldRestart) implements CheckoutPlan {}
         record AlreadyOnBranch(String branch) implements CheckoutPlan {}
-        record DirtyWorkingTree(int changedFileCount) implements CheckoutPlan {}
+        /**
+         * At least one path both differs between the current and target
+         * branch, and is currently uncommitted in the working tree — an
+         * actual conflict, not just "something somewhere is dirty". See
+         * {@link #findConflictingPaths} for why this distinction matters.
+         */
+        record Conflicts(List<String> paths) implements CheckoutPlan {}
         record Failed(String error) implements CheckoutPlan {}
     }
 
@@ -148,7 +158,8 @@ public final class GitManager {
     public sealed interface CheckoutResult {
         record Switched(String branch, boolean worldRestartRequired) implements CheckoutResult {}
         record AlreadyOnBranch(String branch) implements CheckoutResult {}
-        record DirtyWorkingTree(int changedFileCount) implements CheckoutResult {}
+        /** See {@link CheckoutPlan.Conflicts}. */
+        record Conflicts(List<String> paths) implements CheckoutResult {}
         record Failed(String error) implements CheckoutResult {}
     }
 
@@ -369,8 +380,8 @@ public final class GitManager {
             if (preflight.currentBranch().equals(branchName)) {
                 return new CheckoutPlan.AlreadyOnBranch(branchName);
             }
-            if (preflight.dirty()) {
-                return new CheckoutPlan.DirtyWorkingTree(preflight.changedFileCount());
+            if (!preflight.conflictingPaths().isEmpty()) {
+                return new CheckoutPlan.Conflicts(preflight.conflictingPaths());
             }
             return new CheckoutPlan.Ready(preflight.branchExists(), !preflight.sameTree());
         } catch (IOException | GitAPIException | RuntimeException e) {
@@ -383,9 +394,10 @@ public final class GitManager {
     /**
      * Switches to {@code branchName}, creating it at the current commit
      * first if it doesn't already exist (like {@code git checkout -b}).
-     * Refuses if the working tree has any uncommitted changes — see the
-     * class-level docs for why a partial "would this conflict" check isn't
-     * good enough here.
+     * Refuses only if a file that would actually be touched by the switch
+     * is also currently uncommitted — see {@link #findConflictingPaths}
+     * for why a blanket "is anything, anywhere, dirty" check isn't right
+     * for a live Minecraft world.
      */
     public static CheckoutResult checkout(File worldDir, String branchName) {
         if (!isRepo(worldDir)) {
@@ -399,8 +411,8 @@ public final class GitManager {
             if (preflight.currentBranch().equals(branchName)) {
                 return new CheckoutResult.AlreadyOnBranch(branchName);
             }
-            if (preflight.dirty()) {
-                return new CheckoutResult.DirtyWorkingTree(preflight.changedFileCount());
+            if (!preflight.conflictingPaths().isEmpty()) {
+                return new CheckoutResult.Conflicts(preflight.conflictingPaths());
             }
             boolean requiresRestart = !preflight.sameTree();
             git.checkout()
@@ -422,36 +434,88 @@ public final class GitManager {
     /**
      * Shared groundwork for {@link #planCheckout(File, String)} and
      * {@link #checkout(File, String)}, so preview and execution can never
-     * disagree about whether the tree is dirty or whether content would
+     * disagree about which paths conflict or whether content would
      * actually change.
      */
     private record CheckoutPreflight(
-        boolean dirty, int changedFileCount, boolean branchExists, boolean sameTree, String currentBranch
+        List<String> conflictingPaths, boolean branchExists, boolean sameTree, String currentBranch
     ) {}
 
     private static CheckoutPreflight computePreflight(Git git, String branchName) throws IOException, GitAPIException {
         Repository repo = git.getRepository();
         String currentBranch = repo.getBranch();
 
-        Status status = git.status().call();
-        boolean dirty = !status.isClean();
-        int changedFileCount = status.getAdded().size() + status.getChanged().size() + status.getRemoved().size()
-            + status.getModified().size() + status.getMissing().size() + status.getUntracked().size();
-
         Ref targetRef = repo.findRef("refs/heads/" + branchName);
         boolean branchExists = targetRef != null;
 
-        boolean sameTree;
-        if (branchExists) {
-            ObjectId currentTree = repo.resolve("HEAD^{tree}");
-            ObjectId targetTree = repo.resolve("refs/heads/" + branchName + "^{tree}");
-            sameTree = currentTree != null && currentTree.equals(targetTree);
-        } else {
-            // A brand-new branch is created at HEAD, so it's always tree-identical to HEAD.
-            sameTree = true;
+        if (!branchExists) {
+            // A brand-new branch is created at HEAD, so it's always tree-identical
+            // to HEAD — nothing can conflict with a switch that changes no content.
+            return new CheckoutPreflight(List.of(), false, true, currentBranch);
         }
 
-        return new CheckoutPreflight(dirty, changedFileCount, branchExists, sameTree, currentBranch);
+        ObjectId currentTree = repo.resolve("HEAD^{tree}");
+        ObjectId targetTree = repo.resolve("refs/heads/" + branchName + "^{tree}");
+        boolean sameTree = currentTree != null && currentTree.equals(targetTree);
+        List<String> conflicts = sameTree ? List.of() : findConflictingPaths(git, currentTree, targetTree);
+
+        return new CheckoutPreflight(conflicts, true, sameTree, currentBranch);
+    }
+
+    /**
+     * Paths that both (a) differ in content between {@code oldTree} and
+     * {@code newTree}, and (b) are currently uncommitted (modified, staged,
+     * missing, or untracked) in the working tree — i.e. paths checkout would
+     * genuinely need to overwrite something uncommitted for. This mirrors
+     * real git's own checkout safety check ("your local changes ... would be
+     * overwritten"), which only blocks on files actually involved in the
+     * switch — not a blanket "is anything, anywhere, dirty" check.
+     *
+     * <p>That distinction matters a lot here: a live Minecraft world's
+     * autosave constantly rewrites {@code level.dat}, region files, player
+     * data, and more, regardless of what a player actually built — a
+     * blanket dirty check would treat the working tree as "uncommitted"
+     * almost permanently, even moments after a deliberate
+     * {@code /git add} + {@code /git commit}, and block every checkout.
+     */
+    private static List<String> findConflictingPaths(Git git, ObjectId oldTree, ObjectId newTree)
+            throws IOException, GitAPIException {
+        Repository repo = git.getRepository();
+        Set<String> changedBetweenTrees = new HashSet<>();
+        try (ObjectReader reader = repo.newObjectReader()) {
+            CanonicalTreeParser oldTreeParser = new CanonicalTreeParser();
+            oldTreeParser.reset(reader, oldTree);
+            CanonicalTreeParser newTreeParser = new CanonicalTreeParser();
+            newTreeParser.reset(reader, newTree);
+
+            List<DiffEntry> diffs = git.diff()
+                .setOldTree(oldTreeParser)
+                .setNewTree(newTreeParser)
+                .setShowNameAndStatusOnly(true)
+                .call();
+            for (DiffEntry entry : diffs) {
+                addIfReal(changedBetweenTrees, entry.getOldPath());
+                addIfReal(changedBetweenTrees, entry.getNewPath());
+            }
+        }
+
+        Status status = git.status().call();
+        Set<String> dirtyPaths = new HashSet<>();
+        dirtyPaths.addAll(status.getAdded());
+        dirtyPaths.addAll(status.getChanged());
+        dirtyPaths.addAll(status.getRemoved());
+        dirtyPaths.addAll(status.getModified());
+        dirtyPaths.addAll(status.getMissing());
+        dirtyPaths.addAll(status.getUntracked());
+
+        changedBetweenTrees.retainAll(dirtyPaths);
+        return changedBetweenTrees.stream().sorted().toList();
+    }
+
+    private static void addIfReal(Set<String> paths, String path) {
+        if (path != null && !path.equals(DiffEntry.DEV_NULL)) {
+            paths.add(path);
+        }
     }
 
     private static String shortBranchName(String fullRefName) {

@@ -194,15 +194,21 @@ checkout is built around that risk:
   the world, since nothing has diverged yet — you keep playing
   immediately. It's switching *back* to a branch with different history
   that triggers the safe-close.
-- Checkout only refuses when there's a genuine conflict: a file that
-  both differs between your current branch and the target, *and* has
-  uncommitted local changes. It deliberately does **not** block on "is
-  anything, anywhere, dirty" — a live world's autosave constantly
-  rewrites `level.dat`, region files, and player data regardless of
-  what you actually built, so a blanket dirtiness check would refuse
-  almost every checkout, even seconds after a deliberate `/git add` +
-  `/git commit`. If it does refuse, the message names the exact
-  conflicting file(s) so you know what to commit or discard.
+- Checkout does **not** refuse based on git's own "uncommitted changes"
+  file diffing, even though real git does. Minecraft's chunk format
+  writes a tick counter and an "inhabited time" counter into every
+  chunk's data on every save, both of which change just from a chunk
+  staying loaded — regardless of anything a player does. That means a
+  region file for an area you're standing in will look "modified" again
+  within moments of any commit, purely from world simulation, with zero
+  meaningful content change. A file-level dirty check would therefore
+  refuse almost every checkout of a place you've actually been building
+  in — including the exact "commit on a new branch, then switch back"
+  flow this feature exists for. Checkout instead refuses only when
+  **`/git status`'s tracked block-change count is nonzero** — driven by
+  explicit place/break events rather than raw file bytes, so it isn't
+  fooled by that churn. Run `/git status`, then `/git add` + `/git
+  commit`, and checkout will go through.
 - Preview and confirm each independently recompute everything from
   scratch — there's no cached state between the two calls that could go
   stale or be tricked into skipping a check.

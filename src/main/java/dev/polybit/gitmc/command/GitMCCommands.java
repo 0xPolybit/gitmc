@@ -37,7 +37,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import static net.minecraft.commands.Commands.argument;
 import static net.minecraft.commands.Commands.literal;
@@ -97,11 +96,21 @@ import static net.minecraft.commands.Commands.literal;
  *   <li>{@code /git checkout <branch>} — a dry-run preview: what would
  *       happen, and whether it would require closing the world.</li>
  *   <li>{@code /git checkout <branch> confirm} — actually performs it. Forces
- *       a full save first (so the dirty-check and preview reflect real
- *       on-disk state), refuses if there are uncommitted changes, and — only
- *       if the checkout actually changes file content — halts the server
- *       afterward so the world must be reopened to see the change safely.</li>
+ *       a full save first, refuses if {@link BlockChangeTracker} has any
+ *       pending block changes (see below for why that's the check, not raw
+ *       git status), and — only if the checkout actually changes file
+ *       content — halts the server afterward so the world must be reopened
+ *       to see the change safely.</li>
  * </ul>
+ * Checkout does <em>not</em> refuse based on git's own dirty-file status:
+ * Minecraft's chunk format writes a tick counter and an "inhabited time"
+ * counter into every chunk on every save, both of which change just from a
+ * chunk staying loaded — regardless of anything a player does. That makes
+ * file-level dirty checks produce false positives on nearly every checkout
+ * of an area the player has actually been in. {@link BlockChangeTracker}'s
+ * pending-change count is used instead, since it's driven by explicit
+ * place/break events and isn't affected by that noise — see
+ * {@link GitManager} class docs for the full explanation.
  */
 public final class GitMCCommands {
 
@@ -468,6 +477,11 @@ public final class GitMCCommands {
 
         return switch (plan) {
             case CheckoutPlan.Ready(var willCreate, var requiresRestart) -> {
+                int pending = BlockChangeTracker.getInstance().totalCount();
+                if (pending > 0) {
+                    source.sendFailure(Component.literal(pendingChangesMessage(pending)));
+                    yield 0;
+                }
                 String action = willCreate
                     ? "Create branch '" + branch + "' at your current commit and switch to it."
                     : "Switch to branch '" + branch + "'.";
@@ -480,13 +494,6 @@ public final class GitMCCommands {
             }
             case CheckoutPlan.AlreadyOnBranch(var b) -> {
                 source.sendFailure(Component.literal("Already on branch '" + b + "'."));
-                yield 0;
-            }
-            case CheckoutPlan.Conflicts(var paths) -> {
-                source.sendFailure(Component.literal(
-                    "Switching to '" + branch + "' would overwrite " + describeConflicts(paths)
-                        + " with uncommitted changes. Use /git add and /git commit first, "
-                        + "or discard the changes, then try again."));
                 yield 0;
             }
             case CheckoutPlan.Failed(var error) -> {
@@ -506,6 +513,12 @@ public final class GitMCCommands {
         CommandSourceStack source = ctx.getSource();
         MinecraftServer server = source.getServer();
         server.saveEverything(false, true, true);
+
+        int pending = BlockChangeTracker.getInstance().totalCount();
+        if (pending > 0) {
+            source.sendFailure(Component.literal(pendingChangesMessage(pending)));
+            return 0;
+        }
 
         String branch = StringArgumentType.getString(ctx, "branch");
         CheckoutResult result = GitManager.checkout(worldDir(server), branch);
@@ -527,13 +540,6 @@ public final class GitMCCommands {
                 source.sendFailure(Component.literal("Already on branch '" + b + "'."));
                 yield 0;
             }
-            case CheckoutResult.Conflicts(var paths) -> {
-                source.sendFailure(Component.literal(
-                    "Switching to '" + branch + "' would overwrite " + describeConflicts(paths)
-                        + " with uncommitted changes. Use /git add and /git commit first, "
-                        + "or discard the changes, then try again."));
-                yield 0;
-            }
             case CheckoutResult.Failed(var error) -> {
                 source.sendFailure(Component.literal("Failed to checkout: " + error));
                 yield 0;
@@ -541,14 +547,17 @@ public final class GitMCCommands {
         };
     }
 
-    /** Formats conflicting paths for chat: lists up to a few, then "and N more". */
-    private static String describeConflicts(List<String> paths) {
-        int maxListed = 5;
-        String joined = paths.stream().limit(maxListed).collect(Collectors.joining(", "));
-        if (paths.size() > maxListed) {
-            joined += ", and " + (paths.size() - maxListed) + " more";
-        }
-        return paths.size() + " file(s) (" + joined + ")";
+    /**
+     * Message shown when {@link BlockChangeTracker} has pending block
+     * changes: this — not raw git status — is the reliable signal for
+     * "would checkout discard something a player actually built", since
+     * it's driven by explicit place/break events rather than raw file
+     * diffing (which Minecraft's constantly-ticking chunk metadata makes
+     * unusable for this purpose — see {@link GitManager} class docs).
+     */
+    private static String pendingChangesMessage(int pending) {
+        return "You have " + pending + " tracked block change(s) since your last commit (see /git status). "
+            + "Switching branches now would leave them uncommitted. Use /git add and /git commit first.";
     }
 
     // ---------------------------------------------------------------------

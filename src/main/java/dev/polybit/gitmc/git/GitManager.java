@@ -6,14 +6,11 @@ import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.api.errors.GitAPIException;
 import org.eclipse.jgit.api.errors.NoHeadException;
 import org.eclipse.jgit.api.errors.RefAlreadyExistsException;
-import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.lib.ObjectId;
-import org.eclipse.jgit.lib.ObjectReader;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
-import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,7 +21,6 @@ import java.nio.file.Files;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -48,6 +44,26 @@ import java.util.Set;
  * changes file content ({@link CheckoutPlan.Ready#requiresWorldRestart()}
  * / {@link CheckoutResult.Switched#worldRestartRequired()}), stopping the
  * server afterward so stale state can never be written back.
+ *
+ * <h2>Why {@code checkout} does not do its own "uncommitted changes" check</h2>
+ * An earlier version of this class compared file content between the
+ * current and target branch's trees, intersected with git's own dirty-file
+ * status, and refused the checkout if anything overlapped — mirroring real
+ * git's "your local changes would be overwritten" safety check. That doesn't
+ * work here: Minecraft's chunk format ({@code SerializableChunkData}) writes
+ * a {@code LastUpdate} tick count and an {@code InhabitedTime} counter into
+ * every chunk's NBT on every save, both of which change from simply having
+ * the chunk loaded for a while — regardless of whether a player did
+ * anything. That means a region file covering a chunk that's stayed loaded
+ * since the last commit will almost always look "modified" by the time a
+ * checkout is attempted, even with zero meaningful change, making a
+ * file-level dirty check produce false conflicts on almost every checkout of
+ * an area the player has actually been building in. {@link #checkout} passes
+ * {@code setForced(true)} to JGit's checkout so this noise can't block it;
+ * the actual player-facing "would this discard uncommitted work" question is
+ * answered by the caller using {@code BlockChangeTracker}'s tracked change
+ * count instead, since that's driven by explicit place/break events and is
+ * immune to this kind of file-level churn.
  */
 public final class GitManager {
 
@@ -133,7 +149,9 @@ public final class GitManager {
      * mutating anything, so a caller can preview what a checkout would do
      * (and require explicit confirmation) before actually performing one.
      * Shares its cases with {@link CheckoutResult} by design: both are
-     * answers to "what would/did checking out to this branch do".
+     * answers to "what would/did checking out to this branch do". Neither
+     * type reports "uncommitted changes" conflicts — see class-level docs
+     * for why that check doesn't belong here.
      */
     public sealed interface CheckoutPlan {
         /**
@@ -144,13 +162,6 @@ public final class GitManager {
          */
         record Ready(boolean branchExists, boolean requiresWorldRestart) implements CheckoutPlan {}
         record AlreadyOnBranch(String branch) implements CheckoutPlan {}
-        /**
-         * At least one path both differs between the current and target
-         * branch, and is currently uncommitted in the working tree — an
-         * actual conflict, not just "something somewhere is dirty". See
-         * {@link #findConflictingPaths} for why this distinction matters.
-         */
-        record Conflicts(List<String> paths) implements CheckoutPlan {}
         record Failed(String error) implements CheckoutPlan {}
     }
 
@@ -158,8 +169,6 @@ public final class GitManager {
     public sealed interface CheckoutResult {
         record Switched(String branch, boolean worldRestartRequired) implements CheckoutResult {}
         record AlreadyOnBranch(String branch) implements CheckoutResult {}
-        /** See {@link CheckoutPlan.Conflicts}. */
-        record Conflicts(List<String> paths) implements CheckoutResult {}
         record Failed(String error) implements CheckoutResult {}
     }
 
@@ -380,11 +389,8 @@ public final class GitManager {
             if (preflight.currentBranch().equals(branchName)) {
                 return new CheckoutPlan.AlreadyOnBranch(branchName);
             }
-            if (!preflight.conflictingPaths().isEmpty()) {
-                return new CheckoutPlan.Conflicts(preflight.conflictingPaths());
-            }
             return new CheckoutPlan.Ready(preflight.branchExists(), !preflight.sameTree());
-        } catch (IOException | GitAPIException | RuntimeException e) {
+        } catch (IOException | RuntimeException e) {
             String failure = describe(e);
             LOGGER.warn("git checkout (plan, branch={}) failed in {}: {}", branchName, worldDir, failure, e);
             return new CheckoutPlan.Failed(failure);
@@ -394,10 +400,13 @@ public final class GitManager {
     /**
      * Switches to {@code branchName}, creating it at the current commit
      * first if it doesn't already exist (like {@code git checkout -b}).
-     * Refuses only if a file that would actually be touched by the switch
-     * is also currently uncommitted — see {@link #findConflictingPaths}
-     * for why a blanket "is anything, anywhere, dirty" check isn't right
-     * for a live Minecraft world.
+     * Always proceeds — {@code setForced(true)} tells JGit not to refuse
+     * over locally-modified files, since (per class-level docs) that check
+     * is unreliable for Minecraft's file formats. Losing uncommitted player
+     * work is the caller's concern to guard against beforehand (see
+     * {@code GitMCCommands}, which checks {@code BlockChangeTracker}), and
+     * losing anything else to a checkout is no different from what
+     * Minecraft's own autosave already overwrites constantly.
      */
     public static CheckoutResult checkout(File worldDir, String branchName) {
         if (!isRepo(worldDir)) {
@@ -411,13 +420,11 @@ public final class GitManager {
             if (preflight.currentBranch().equals(branchName)) {
                 return new CheckoutResult.AlreadyOnBranch(branchName);
             }
-            if (!preflight.conflictingPaths().isEmpty()) {
-                return new CheckoutResult.Conflicts(preflight.conflictingPaths());
-            }
             boolean requiresRestart = !preflight.sameTree();
             git.checkout()
                 .setName(branchName)
                 .setCreateBranch(!preflight.branchExists())
+                .setForced(true)
                 .call();
             return new CheckoutResult.Switched(branchName, requiresRestart);
         } catch (IOException | GitAPIException | RuntimeException e) {
@@ -434,14 +441,11 @@ public final class GitManager {
     /**
      * Shared groundwork for {@link #planCheckout(File, String)} and
      * {@link #checkout(File, String)}, so preview and execution can never
-     * disagree about which paths conflict or whether content would
-     * actually change.
+     * disagree about whether content would actually change.
      */
-    private record CheckoutPreflight(
-        List<String> conflictingPaths, boolean branchExists, boolean sameTree, String currentBranch
-    ) {}
+    private record CheckoutPreflight(boolean branchExists, boolean sameTree, String currentBranch) {}
 
-    private static CheckoutPreflight computePreflight(Git git, String branchName) throws IOException, GitAPIException {
+    private static CheckoutPreflight computePreflight(Git git, String branchName) throws IOException {
         Repository repo = git.getRepository();
         String currentBranch = repo.getBranch();
 
@@ -451,71 +455,14 @@ public final class GitManager {
         if (!branchExists) {
             // A brand-new branch is created at HEAD, so it's always tree-identical
             // to HEAD — nothing can conflict with a switch that changes no content.
-            return new CheckoutPreflight(List.of(), false, true, currentBranch);
+            return new CheckoutPreflight(false, true, currentBranch);
         }
 
         ObjectId currentTree = repo.resolve("HEAD^{tree}");
         ObjectId targetTree = repo.resolve("refs/heads/" + branchName + "^{tree}");
         boolean sameTree = currentTree != null && currentTree.equals(targetTree);
-        List<String> conflicts = sameTree ? List.of() : findConflictingPaths(git, currentTree, targetTree);
 
-        return new CheckoutPreflight(conflicts, true, sameTree, currentBranch);
-    }
-
-    /**
-     * Paths that both (a) differ in content between {@code oldTree} and
-     * {@code newTree}, and (b) are currently uncommitted (modified, staged,
-     * missing, or untracked) in the working tree — i.e. paths checkout would
-     * genuinely need to overwrite something uncommitted for. This mirrors
-     * real git's own checkout safety check ("your local changes ... would be
-     * overwritten"), which only blocks on files actually involved in the
-     * switch — not a blanket "is anything, anywhere, dirty" check.
-     *
-     * <p>That distinction matters a lot here: a live Minecraft world's
-     * autosave constantly rewrites {@code level.dat}, region files, player
-     * data, and more, regardless of what a player actually built — a
-     * blanket dirty check would treat the working tree as "uncommitted"
-     * almost permanently, even moments after a deliberate
-     * {@code /git add} + {@code /git commit}, and block every checkout.
-     */
-    private static List<String> findConflictingPaths(Git git, ObjectId oldTree, ObjectId newTree)
-            throws IOException, GitAPIException {
-        Repository repo = git.getRepository();
-        Set<String> changedBetweenTrees = new HashSet<>();
-        try (ObjectReader reader = repo.newObjectReader()) {
-            CanonicalTreeParser oldTreeParser = new CanonicalTreeParser();
-            oldTreeParser.reset(reader, oldTree);
-            CanonicalTreeParser newTreeParser = new CanonicalTreeParser();
-            newTreeParser.reset(reader, newTree);
-
-            List<DiffEntry> diffs = git.diff()
-                .setOldTree(oldTreeParser)
-                .setNewTree(newTreeParser)
-                .setShowNameAndStatusOnly(true)
-                .call();
-            for (DiffEntry entry : diffs) {
-                addIfReal(changedBetweenTrees, entry.getOldPath());
-                addIfReal(changedBetweenTrees, entry.getNewPath());
-            }
-        }
-
-        Status status = git.status().call();
-        Set<String> dirtyPaths = new HashSet<>();
-        dirtyPaths.addAll(status.getAdded());
-        dirtyPaths.addAll(status.getChanged());
-        dirtyPaths.addAll(status.getRemoved());
-        dirtyPaths.addAll(status.getModified());
-        dirtyPaths.addAll(status.getMissing());
-        dirtyPaths.addAll(status.getUntracked());
-
-        changedBetweenTrees.retainAll(dirtyPaths);
-        return changedBetweenTrees.stream().sorted().toList();
-    }
-
-    private static void addIfReal(Set<String> paths, String path) {
-        if (path != null && !path.equals(DiffEntry.DEV_NULL)) {
-            paths.add(path);
-        }
+        return new CheckoutPreflight(true, sameTree, currentBranch);
     }
 
     private static String shortBranchName(String fullRefName) {

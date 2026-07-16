@@ -22,37 +22,43 @@ soon as it has a non-`0.x` release.
   autosaving right back over whatever checkout just wrote, silently
   undoing it.
   - `GitManager.planCheckout(File, String)` computes, without mutating
-    anything: whether the branch exists yet; via comparing
+    anything: whether the branch exists yet, and — via comparing
     `repo.resolve("HEAD^{tree}")` against
-    `repo.resolve("refs/heads/<branch>^{tree}")`, whether the checkout
+    `repo.resolve("refs/heads/<branch>^{tree}")` — whether the checkout
     would actually change any file content (a brand-new branch is
     always tree-identical to HEAD, so creating one and switching to it
-    never trips anything below); and — only when content would
-    change — `findConflictingPaths` computes the intersection of
-    "paths that differ between the two branches" (via a tree-to-tree
-    `DiffCommand`) and "paths currently dirty in the working tree"
-    (`git.status()`). Only a path in *both* sets blocks the checkout.
-    This intentionally mirrors real git's own checkout safety
-    semantics (only refuse when a file that would actually be touched
-    is also locally modified) rather than blocking on *any* difference
-    anywhere in the repo — a live Minecraft world's autosave
-    constantly rewrites `level.dat`, region files, and player data
-    regardless of what a player actually built, so a blanket dirtiness
-    check would treat the tree as "uncommitted" almost permanently,
-    even seconds after a deliberate `/git add` + `/git commit`, and
-    refuse nearly every checkout. (Originally shipped with exactly that
-    blanket check — fixed after being reported as blocking checkout
-    even with everything committed.)
-  - `GitManager.checkout(File, String)` re-runs the identical
-    preflight check before performing the switch (`CheckoutPreflight`,
-    shared by both methods), so preview and execution can never
-    disagree, and there's no cached state between the two calls that
-    could go stale.
+    never requires closing the world).
+  - `GitManager.checkout(File, String)` passes `setForced(true)` to
+    JGit's `CheckoutCommand`, so it never refuses over locally-modified
+    files. This was **not** the original design — an earlier version
+    computed a precise conflict set (paths that both differ between
+    branches and are locally dirty) and blocked on it, mirroring real
+    git's own checkout safety semantics. That turned out to be
+    unreliable for Minecraft specifically: `SerializableChunkData`
+    writes a `LastUpdate` tick count and an `InhabitedTime` counter into
+    every chunk's NBT on every save, both of which change just from a
+    chunk staying loaded, regardless of anything a player does. That
+    means a region file for an area the player is standing in looks
+    "modified" again within moments of any commit, purely from world
+    simulation — with the *exact* file that was just committed being
+    the most likely one to trip this, since that's precisely where the
+    player still is. A file-level dirty check therefore refused almost
+    every checkout of a place the player had actually been building in,
+    including the "commit on a new branch, then switch back" flow this
+    feature exists for — confirmed via a standalone JGit repo
+    (`GitManager` has no Minecraft dependencies, so this is testable
+    without the game) reproducing that exact scenario.
+  - The "would this discard uncommitted work" question moved to
+    `GitMCCommands`, using `BlockChangeTracker`'s tracked pending-change
+    count instead of raw git status — that tracker is driven by
+    explicit place/break events, not file diffing, so it isn't fooled
+    by chunk metadata churn. Both preview and confirm refuse if
+    `BlockChangeTracker.getInstance().totalCount() > 0`.
   - `GitMCCommands` forces `MinecraftServer.saveEverything(...)` before
-    both the preview and the confirm, so the dirty-check and the
-    tree-comparison reflect true on-disk state rather than whatever was
-    last autosaved. If the confirmed checkout changed file content, it
-    calls `MinecraftServer.halt(false)` afterward — `false` because
+    both the preview and the confirm, so the content-change check
+    reflects true on-disk state rather than whatever was last
+    autosaved. If the confirmed checkout changed file content, it calls
+    `MinecraftServer.halt(false)` afterward — `false` because
     `halt(true)` blocks until shutdown completes, which would deadlock
     if called from the server's own thread (as a command handler is).
   - Scoped to singleplayer/LAN, same as the block-change overlay:
